@@ -1,0 +1,24 @@
+{
+  "name": "reading-randomizer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cross-platform reading randomizer MVP for Chrome bookmarks.",
+  "main": "src/main/main.js",
+  "scripts": {
+    "dev": "electron .",
+    "start": "electron .",
+    "check": "node scripts/smoke-check.js",
+    "test": "node scripts/run-tests.js",
+    "audit:library": "electron scripts/audit-library.js",
+    "health:report": "electron scripts/health-report.js",
+    "health:runtime": "node scripts/runtime-health-report.js"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "cheerio": "^1.0.0",
+    "jsdom": "^29.1.1"
+  },
+  "devDependencies": {
+    "electron": "^42.0.1"
+  }
+}

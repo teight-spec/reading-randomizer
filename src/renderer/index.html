@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; connect-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'self'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reading Randomizer</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="reader-app">
+    <header class="topbar">
+      <div class="article-chip">
+        <strong id="articleTitle">Reading Randomizer</strong>
+        <span id="siteMeta">Preparing article...</span>
+      </div>
+      <nav class="toolbar">
+        <input id="searchInput" class="top-search" placeholder="Search library">
+        <button id="nextButton">Next</button>
+        <button id="markReadButton" class="ghost">Read</button>
+        <button id="originalButton" class="ghost">Open Article</button>
+        <button id="archiveButton" class="ghost">Bypass</button>
+        <button id="translatePanelButton" class="ghost">Translate</button>
+        <button id="settingsPanelButton" class="ghost">Mirrors</button>
+      </nav>
+    </header>
+
+    <section class="content-shell">
+      <aside class="source-sidebar">
+        <div class="sidebar-head">
+          <div>
+            <strong>Library</strong>
+            <span>Reading sources</span>
+          </div>
+        </div>
+        <section class="library-actions">
+          <button id="importChromeButton" class="import-button">Import Bookmark Folders</button>
+          <div class="import-note">One-time import from Chrome folders: English, fashion, literary award.</div>
+        </section>
+        <details class="add-source-box" open>
+          <summary>Add One Website</summary>
+          <form id="addSiteForm" class="stack-form">
+            <input id="siteFolderInput" placeholder="Collection, e.g. English">
+            <input id="siteTitleInput" placeholder="Source name">
+            <input id="siteUrlInput" placeholder="https://example.com">
+            <input id="siteFeedInput" placeholder="RSS / Atom URL (optional)">
+            <button type="submit">Add Website</button>
+          </form>
+        </details>
+        <section class="maintenance-box">
+          <div>
+            <strong>Browser Cache</strong>
+            <span id="cacheUsage">Checking...</span>
+          </div>
+          <button id="clearCacheButton" class="ghost">Clear</button>
+        </section>
+        <div id="siteTree" class="source-tree"></div>
+      </aside>
+
+      <section class="reading-stage">
+        <article id="readerModeView" class="reader-mode">
+          <div class="reader-controls">
+            <button id="fontMinusButton" class="ghost">A-</button>
+            <button id="fontPlusButton" class="ghost">A+</button>
+            <button id="widthMinusButton" class="ghost">Narrow</button>
+            <button id="widthPlusButton" class="ghost">Wide</button>
+          </div>
+          <div id="readerArticle" class="reader-article"></div>
+        </article>
+      </section>
+    </section>
+
+    <div id="status" class="status">Ready</div>
+
+    <aside id="quickTranslate" class="quick-translate hidden">
+      <div id="quickTranslateHandle" class="quick-translate-head">
+        <strong>Translate</strong>
+        <div class="quick-actions">
+          <button id="pinTranslateButton" class="ghost">Pin</button>
+          <button id="closeQuickTranslateButton" class="ghost">Close</button>
+        </div>
+      </div>
+      <div id="quickTranslateSource" class="quick-source"></div>
+      <div id="quickTranslateResult" class="quick-result">Translating...</div>
+    </aside>
+
+    <aside id="drawer" class="drawer hidden">
+      <div class="drawer-head">
+        <strong id="drawerTitle">Panel</strong>
+        <button id="closeDrawerButton" class="ghost">Close</button>
+      </div>
+
+      <section id="translatePanel" class="drawer-panel hidden">
+        <textarea id="translationInput" placeholder="Paste selected text, long sentence, or paragraph here."></textarea>
+        <div class="button-row">
+          <button id="translateAutoButton">Translate</button>
+          <button id="translateZhButton" class="ghost">To Chinese</button>
+          <button id="translateEnButton" class="ghost">To English</button>
+        </div>
+        <pre id="translationOutput"></pre>
+      </section>
+
+      <section id="bypassPanel" class="drawer-panel hidden">
+        <form id="addBypassForm" class="stack-form">
+          <input id="bypassNameInput" placeholder="Source name">
+          <input id="bypassTemplateInput" placeholder="https://archive.example/{url}">
+          <button type="submit">Add bypass source</button>
+        </form>
+        <div id="bypassList" class="list"></div>
+      </section>
+    </aside>
+  </main>
+
+  <script src="./runtimeReporter.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

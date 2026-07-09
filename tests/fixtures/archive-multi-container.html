@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+  <title>Archive Capture of a Long Article</title>
+  <meta property="og:title" content="Archive Capture of a Long Article">
+</head>
+<body>
+  <nav>Home Newsletter Privacy Terms</nav>
+  <main role="main">
+    <div class="post-content">
+      <p>An archived article often arrives with wrappers that were not present on the original site. The first wrapper may contain enough text to look plausible, but not enough to represent the full article.</p>
+      <p>This fixture checks that extraction does not stop at the first article-like node. It should merge later blocks in document order and avoid navigation text.</p>
+      <p>The opening section introduces the subject, defines the tension, and gives the reader a reason to continue into the reported middle of the piece.</p>
+    </div>
+    <div class="article-body">
+      <p>The middle section is where long-form work usually becomes valuable. It adds evidence, counterargument, chronology, and detail that cannot be reduced to a summary paragraph.</p>
+      <p>If a parser returns only the first container, the reading experience fails silently. The title may look right, the first paragraphs may look real, but the article has been cut in half.</p>
+      <p>Archive pages also contain duplicate labels, sidebars, and institutional boilerplate. A stable reader has to collect article paragraphs while leaving these structural artifacts behind.</p>
+    </div>
+    <section class="entry-content">
+      <p>The final section gives the article its shape. It resolves the earlier conflict without pretending that every uncertainty has disappeared.</p>
+      <p>Readers should reach this paragraph in the extracted output. Its presence is the regression signal that multi-container extraction remains complete.</p>
+      <p>A maintenance test like this prevents future parser changes from optimizing for a short sample while breaking long, archived, or paywalled pages.</p>
+    </section>
+  </main>
+</body>
+</html>
