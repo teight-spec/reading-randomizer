@@ -7,6 +7,7 @@ const required = [
   "scripts/probe-browser-page.js",
   "scripts/probe-reader.js",
   "scripts/probe-translation.js",
+  "scripts/create-mac-launcher.js",
   "src/main/main.js",
   "src/main/services/bookmarks.js",
   "src/main/services/historyStore.js",

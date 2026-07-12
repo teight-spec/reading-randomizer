@@ -50,6 +50,7 @@ function createWindow() {
     minWidth: 980,
     minHeight: 680,
     title: "Reading Randomizer",
+    icon: path.join(__dirname, "../../assets/app-icon.icns"),
     webPreferences: {
       preload: path.join(__dirname, "../preload/preload.js"),
       contextIsolation: true,

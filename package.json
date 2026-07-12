@@ -9,6 +9,7 @@
     "start": "electron .",
     "check": "node scripts/smoke-check.js",
     "test": "node scripts/run-tests.js",
+    "launcher:mac": "node scripts/create-mac-launcher.js",
     "audit:library": "electron scripts/audit-library.js",
     "health:report": "electron scripts/health-report.js",
     "health:runtime": "node scripts/runtime-health-report.js"

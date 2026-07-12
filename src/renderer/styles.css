@@ -1,25 +1,25 @@
 :root {
   color-scheme: light;
-  --bg: #f7f2ea;
-  --bg-tint: #fffaf2;
-  --surface: #fffdf8;
+  --bg: #eaf5f1;
+  --bg-tint: #f8fbf6;
+  --surface: #fbfdf9;
   --surface-strong: #ffffff;
-  --surface-soft: #f4eee4;
-  --surface-glass: rgba(255, 253, 248, 0.82);
-  --text: #28231d;
-  --text-strong: #17130f;
-  --muted: #7b7268;
-  --muted-soft: #a49b8f;
-  --line: #e7ded0;
-  --line-strong: #d8cbb8;
-  --accent: #2f65d9;
-  --accent-warm: #e97945;
+  --surface-soft: #dfeee9;
+  --surface-glass: rgba(251, 253, 249, 0.84);
+  --text: #24302d;
+  --text-strong: #14231f;
+  --muted: #61726d;
+  --muted-soft: #91a39d;
+  --line: #d7e5df;
+  --line-strong: #bfd3cb;
+  --accent: #2e7d79;
+  --accent-warm: #f2a36b;
   --accent-coral: #ef6f66;
-  --accent-teal: #2a9c8f;
-  --accent-soft: #e9f0ff;
-  --accent-warm-soft: #fff0e5;
-  --shadow-sm: 0 8px 24px rgba(63, 48, 32, 0.08);
-  --shadow: 0 22px 60px rgba(63, 48, 32, 0.16);
+  --accent-teal: #3a9c8f;
+  --accent-soft: #e2f1ed;
+  --accent-warm-soft: #fff1e6;
+  --shadow-sm: 0 8px 24px rgba(32, 74, 68, 0.08);
+  --shadow: 0 22px 60px rgba(32, 74, 68, 0.16);
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --reader-font-size: 20px;
   --reader-width: 760px;
@@ -28,24 +28,24 @@
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --bg: #161514;
-    --bg-tint: #1d1b18;
-    --surface: #22201d;
-    --surface-strong: #292723;
-    --surface-soft: #1d1b19;
-    --surface-glass: rgba(34, 32, 29, 0.84);
-    --text: #eee9df;
-    --text-strong: #fff8eb;
-    --muted: #aaa195;
-    --muted-soft: #7e766d;
-    --line: #39342d;
-    --line-strong: #484139;
-    --accent: #8eb1ff;
-    --accent-warm: #ff9b66;
+    --bg: #111b19;
+    --bg-tint: #172522;
+    --surface: #1d2a27;
+    --surface-strong: #24332f;
+    --surface-soft: #17221f;
+    --surface-glass: rgba(29, 42, 39, 0.86);
+    --text: #eaf5ef;
+    --text-strong: #fbfff9;
+    --muted: #a9bbb4;
+    --muted-soft: #738983;
+    --line: #31443e;
+    --line-strong: #405a52;
+    --accent: #73c8bd;
+    --accent-warm: #f2ad79;
     --accent-coral: #ff8b84;
-    --accent-teal: #63c8ba;
-    --accent-soft: #202b43;
-    --accent-warm-soft: #32251d;
+    --accent-teal: #7fd1c4;
+    --accent-soft: #213b37;
+    --accent-warm-soft: #3a2b20;
     --shadow-sm: 0 8px 24px rgba(0, 0, 0, 0.22);
     --shadow: 0 22px 60px rgba(0, 0, 0, 0.42);
   }
@@ -62,9 +62,7 @@ body {
   color: var(--text);
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   letter-spacing: 0;
-  background:
-    radial-gradient(circle at top left, color-mix(in srgb, var(--accent-warm) 13%, transparent), transparent 34vw),
-    linear-gradient(135deg, var(--bg-tint), var(--bg));
+  background: linear-gradient(135deg, var(--bg-tint), var(--bg));
 }
 
 button,
@@ -105,7 +103,7 @@ button:hover {
 button.ghost:hover {
   border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
   background: color-mix(in srgb, var(--accent-soft) 38%, var(--surface-strong));
-  box-shadow: 0 6px 18px rgba(63, 48, 32, 0.06);
+  box-shadow: 0 6px 18px rgba(32, 74, 68, 0.06);
 }
 
 button:active {
@@ -624,7 +622,7 @@ button.danger:hover {
   border: 1px solid color-mix(in srgb, var(--line) 76%, transparent);
   border-radius: 999px;
   background: var(--surface-glass);
-  box-shadow: 0 10px 28px rgba(63, 48, 32, 0.1);
+  box-shadow: 0 10px 28px rgba(32, 74, 68, 0.1);
   backdrop-filter: blur(18px);
   opacity: 0.72;
   transform: translateY(0);
@@ -835,7 +833,7 @@ pre {
   padding: 7px;
   border: 1px solid color-mix(in srgb, var(--line) 82%, transparent);
   border-radius: 999px;
-  box-shadow: 0 12px 28px rgba(63, 48, 32, 0.12);
+  box-shadow: 0 12px 28px rgba(32, 74, 68, 0.12);
   background: var(--surface-glass);
   backdrop-filter: blur(20px);
 }
