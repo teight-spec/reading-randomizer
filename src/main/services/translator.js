@@ -143,7 +143,7 @@ class Translator {
     const translatedChunks = [];
 
     for (const chunk of chunks) {
-      const chunkKey = `${source}:${target}:${chunk}`;
+      const chunkKey = hashTranslationKey(`${source}:${target}:${chunk}`);
       if (this.cache.has(chunkKey)) {
         translatedChunks.push(this.cache.get(chunkKey).translatedText);
         continue;
@@ -277,6 +277,7 @@ function requestJson(url, options = {}) {
     source: "translator",
     fetchMode: "translation",
     strategySource: "translation-provider",
+    sensitiveUrl: true,
     headers: {
       "Accept": "application/json,text/plain,*/*",
       ...(options.headers || {})
@@ -340,6 +341,10 @@ function containsChinese(text) {
 
 function makeTranslationKey({ articleId = "global", selectionKey = "", source, target, text }) {
   const material = selectionKey || `${articleId}:${source}:${target}:${text}`;
+  return hashTranslationKey(material);
+}
+
+function hashTranslationKey(material) {
   return crypto.createHash("sha256").update(material).digest("hex");
 }
 

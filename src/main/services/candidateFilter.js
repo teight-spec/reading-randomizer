@@ -25,9 +25,16 @@ const DISALLOWED_PATH_PARTS = [
   "/contact",
   "/privacy",
   "/terms",
-  "/newsletter"
+  "/newsletter",
+  "/topic/",
+  "/topics/",
+  "/crossword",
+  "/puzzle",
+  "/games/",
+  "/lecturers/"
 ];
 const SPONSORED_PATTERNS = [/sponsored/i, /advertisement/i, /advertorial/i, /paid post/i, /partner content/i, /paid content/i];
+const UTILITY_CONTENT_PATTERNS = [/\bcrossword\b/i, /\bdaily puzzle\b/i, /\bword game\b/i, /\bquiz\b/i];
 
 function looksLikeArticleUrl(url) {
   try {
@@ -38,6 +45,7 @@ function looksLikeArticleUrl(url) {
     if (DISALLOWED_PATH_PARTS.some((part) => full.includes(part))) return false;
     if (/(^|\/)(tag|tags|category|categories|author|authors|login|signin|search|subscribe|shop)(\/|$)/.test(path)) return false;
     if (SPONSORED_PATTERNS.some((pattern) => pattern.test(full))) return false;
+    if (UTILITY_CONTENT_PATTERNS.some((pattern) => pattern.test(full))) return false;
     if (/\.(jpg|jpeg|png|gif|webp|svg|pdf|zip|mp4|mp3)$/i.test(path)) return false;
     return (
       /\/20\d{2}\//.test(path) ||
@@ -60,7 +68,8 @@ function looksLikeArticleUrl(url) {
 }
 
 function isSponsoredLike(title = "", url = "") {
-  return SPONSORED_PATTERNS.some((pattern) => pattern.test(title) || pattern.test(url));
+  return [...SPONSORED_PATTERNS, ...UTILITY_CONTENT_PATTERNS]
+    .some((pattern) => pattern.test(title) || pattern.test(url));
 }
 
 function isHomepageUrl(siteUrl, candidateUrl) {

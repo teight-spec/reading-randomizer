@@ -39,7 +39,7 @@
       <header class="topbar">
         <div class="reading-status-block">
           <div class="reading-status-line">
-            <span>第 218 期</span>
+            <span id="issueNumber">第 1 期</span>
             <span aria-hidden="true">·</span>
             <span id="readingProgress" class="reading-progress">阅读进度 0%</span>
           </div>
@@ -192,7 +192,7 @@
 
         <div class="management-links">
           <button id="settingsPanelButton" class="ghost">镜像设置</button>
-          <button id="aiSettingsButton" class="ghost">AI 分析设置</button>
+          <button id="aiSettingsButton" class="ghost">隐私与 AI</button>
         </div>
       </section>
 
@@ -218,7 +218,17 @@
             <button id="clearGroqApiKeyButton" type="button" class="ghost">清除</button>
           </div>
         </form>
-        <p class="settings-help">密钥会使用操作系统凭据存储进行加密，并且不会回显在此页面。</p>
+        <p class="settings-help">密钥会使用操作系统凭据存储进行加密，并且不会回显在此页面。启用后，已读文章正文会发送至 Groq 生成摘要。</p>
+        <div class="privacy-setting-row">
+          <div>
+            <strong>允许远程划词翻译</strong>
+            <span>启用后，只有你选中的文本会发送至翻译服务；本地日志不会保存文本。</span>
+          </div>
+          <label class="privacy-toggle">
+            <input id="translationConsentInput" type="checkbox">
+            <span>启用</span>
+          </label>
+        </div>
       </section>
     </aside>
   </main>

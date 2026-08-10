@@ -6,7 +6,7 @@ const VERBOSE_HTTP_STATUS = process.env.READER_NET_DEBUG === "verbose";
 const noisyErrors = new Map();
 const logThrottle = new Map();
 
-function installNetworkDiagnostics({ app, session, getWindows }) {
+function installNetworkDiagnostics({ app, session, getWindows, recordDiagnostic = null }) {
   const userDataPath = app.getPath("userData");
   const netLogPath = path.join(userDataPath, "network-debug-netlog.json");
   const enabledNetLog = process.env.READER_NETLOG === "1";
@@ -25,10 +25,15 @@ function installNetworkDiagnostics({ app, session, getWindows }) {
   app.on("certificate-error", (event, webContents, url, error, certificate, callback) => {
     event.preventDefault();
     logNetworkEvent("certificate_error", {
-      url,
+      url: redactNetworkUrl(url),
       error,
       subjectName: certificate?.subjectName || "",
       issuerName: certificate?.issuerName || "",
+      windowType: classifyWebContents(webContents, getWindows)
+    });
+    recordDiagnostic?.("network_certificate_error", {
+      url: redactNetworkUrl(url),
+      error,
       windowType: classifyWebContents(webContents, getWindows)
     });
     callback(false);
@@ -37,7 +42,7 @@ function installNetworkDiagnostics({ app, session, getWindows }) {
   session.webRequest.onErrorOccurred((details) => {
     if (details.error === "net::ERR_BLOCKED_BY_CLIENT") return;
     const event = {
-      url: details.url,
+      url: redactNetworkUrl(details.url),
       error: details.error,
       method: details.method,
       resourceType: details.resourceType,
@@ -48,18 +53,21 @@ function installNetworkDiagnostics({ app, session, getWindows }) {
     };
     rememberNetworkError(event);
     logNetworkEvent("request_failed", event);
+    recordDiagnostic?.("network_request_failed", event);
   });
 
   session.webRequest.onCompleted((details) => {
     if (details.statusCode >= 500 || (VERBOSE_HTTP_STATUS && details.statusCode >= 400)) {
-      logNetworkEvent("request_completed_error_status", {
-        url: details.url,
+      const event = {
+        url: redactNetworkUrl(details.url),
         statusCode: details.statusCode,
         method: details.method,
         resourceType: details.resourceType,
         windowType: classifyWebContentsById(details.webContentsId, getWindows),
         probableModule: inferModule(details.url, details.resourceType)
-      });
+      };
+      logNetworkEvent("request_completed_error_status", event);
+      recordDiagnostic?.("network_request_status", event);
     }
   });
 
@@ -77,7 +85,7 @@ function attachWindowDiagnostics(win, label) {
       label,
       errorCode,
       errorDescription,
-      url: validatedURL,
+      url: redactNetworkUrl(validatedURL),
       isMainFrame
     });
   });
@@ -146,6 +154,24 @@ function safeHost(url) {
   } catch {
     return "";
   }
+}
+
+function redactNetworkUrl(value) {
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    url.hash = "";
+    if (isTranslationHost(url.hostname)) return `${url.origin}${url.pathname}`;
+    if (url.search) url.search = "?[redacted]";
+    return url.toString();
+  } catch {
+    return "[invalid-url]";
+  }
+}
+
+function isTranslationHost(hostname = "") {
+  return /(^|\.)(translate\.googleapis\.com|mymemory\.translated\.net|deepl\.com)$/i.test(hostname);
 }
 
 module.exports = {

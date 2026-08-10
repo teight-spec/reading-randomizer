@@ -3,7 +3,6 @@ const { contextBridge, ipcRenderer } = require("electron");
 const api = {
   getNextReading: () => ipcRenderer.invoke("reading:next"),
   readSite: (siteId) => ipcRenderer.invoke("reading:site", siteId),
-  getHistory: () => ipcRenderer.invoke("reading:history"),
   saveReadingProgress: (payload) => ipcRenderer.invoke("reading:progress", payload),
   inspectArticle: (url) => ipcRenderer.invoke("article:inspect", url),
   extractReaderMode: (url) => ipcRenderer.invoke("article:readerMode", url),
@@ -33,10 +32,9 @@ const api = {
   retryKnowledgeAnalysis: (articleId) => ipcRenderer.invoke("knowledge:retry", articleId),
   getKnowledgeSettings: () => ipcRenderer.invoke("knowledge:settings"),
   saveGroqApiKey: (apiKey) => ipcRenderer.invoke("knowledge:saveApiKey", apiKey),
+  saveTranslationConsent: (enabled) => ipcRenderer.invoke("privacy:saveTranslationConsent", enabled),
+  saveReaderPreferences: (patch) => ipcRenderer.invoke("settings:saveReaderPreferences", patch),
   reportRendererError: (payload) => ipcRenderer.invoke("renderer:error", payload)
 };
 
 contextBridge.exposeInMainWorld("readerApi", api);
-contextBridge.exposeInMainWorld("electronAPI", {
-  translate: (payload) => ipcRenderer.invoke("translate:text", payload)
-});

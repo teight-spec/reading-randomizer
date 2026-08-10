@@ -10,6 +10,7 @@ const state = {
   selectedLibraryFolder: "",
   showingOriginal: false,
   translatePinned: false,
+  translationConsent: false,
   translateRequestId: 0,
   translationState: {
     status: "idle",
@@ -27,6 +28,7 @@ const state = {
   },
   selectionTimer: null,
   toastTimer: null,
+  preferenceSaveTimer: null,
   eventsBound: false
 };
 
@@ -62,6 +64,7 @@ const elements = {
   groqSettingsForm: document.querySelector("#groqSettingsForm"),
   groqApiKeyInput: document.querySelector("#groqApiKeyInput"),
   clearGroqApiKeyButton: document.querySelector("#clearGroqApiKeyButton"),
+  translationConsentInput: document.querySelector("#translationConsentInput"),
   addSiteForm: document.querySelector("#addSiteForm"),
   siteFolderInput: document.querySelector("#siteFolderInput"),
   siteTitleInput: document.querySelector("#siteTitleInput"),
@@ -86,7 +89,8 @@ const elements = {
   widthMinusButton: document.querySelector("#widthMinusButton"),
   widthPlusButton: document.querySelector("#widthPlusButton"),
   readingProgress: document.querySelector("#readingProgress"),
-  readingProgressBar: document.querySelector("#readingProgressBar")
+  readingProgressBar: document.querySelector("#readingProgressBar"),
+  issueNumber: document.querySelector("#issueNumber")
 };
 
 const TRANSLATION_STATES = {
@@ -307,9 +311,6 @@ const TranslationService = {
   },
 
   getBridge() {
-    if (window.electronAPI?.translate) {
-      return (payload) => window.electronAPI.translate(payload);
-    }
     if (window.readerApi?.translateText) {
       return (payload) => window.readerApi.translateText(payload);
     }
@@ -329,7 +330,10 @@ async function boot() {
     getContext: getReadingTrackerContext,
     isReaderVisible: () => !elements.readerModeView.classList.contains("hidden") && !isLibraryOpen() && !window.KnowledgeUI?.isOpen?.(),
     onProgress: renderReadingProgress,
-    onCompleted: () => showToast("文章已读完，并已收录到知识库。AI 分析正在排队。"),
+    onCompleted: () => {
+      showToast("文章已读完，并已收录到知识库。AI 分析正在排队。");
+      refreshIssueNumber();
+    },
     onError: (error) => reportRuntimeError("reading_progress_failed", error)
   });
   window.KnowledgeUI?.configure({
@@ -348,6 +352,7 @@ async function boot() {
   await refreshCacheUsage();
   await refreshBypassSources();
   await refreshAiSettings();
+  await refreshIssueNumber();
   await loadNextReading();
 }
 
@@ -361,6 +366,9 @@ function bindEvents() {
   document.addEventListener("keyup", handleReaderSelectionEvent);
   document.addEventListener("pointerup", handleReaderSelectionEvent);
   elements.searchInput.addEventListener("input", renderLibraryView);
+  elements.translationConsentInput?.addEventListener("change", () => {
+    runAction("privacy:translationConsent", saveTranslationConsent);
+  });
 }
 
 function handleDocumentClick(event) {
@@ -661,11 +669,13 @@ async function openLibraryView() {
 function adjustReaderFont(delta) {
   state.readerFontSize = clamp(state.readerFontSize + delta, 16, 28);
   applyReaderSettings();
+  scheduleReaderPreferenceSave();
 }
 
 function adjustReaderWidth(delta) {
   state.readerWidth = clamp(state.readerWidth + delta, 560, 1040);
   applyReaderSettings();
+  scheduleReaderPreferenceSave();
 }
 
 function applyReaderSettings() {
@@ -681,7 +691,7 @@ function openDrawer(panelName) {
 
   const titleMap = {
     bypass: "镜像设置",
-    ai: "AI 分析设置",
+    ai: "隐私与 AI",
     sources: "来源管理"
   };
   elements.drawerTitle.textContent = titleMap[panelName];
@@ -715,6 +725,11 @@ async function handleSelectionTranslation() {
     return;
   }
   state.lastSelectionKey = snapshot.key;
+
+  if (!state.translationConsent) {
+    showQuickTranslate(snapshot.text, "远程划词翻译尚未启用。可在“设置 → 隐私与 AI”中阅读说明并开启。");
+    return;
+  }
 
   showQuickTranslate(snapshot.text, snapshot.truncated ? "正在翻译前 4500 个字符…" : "正在翻译…");
 
@@ -963,6 +978,7 @@ async function handleSiteAction(button) {
     await window.readerApi.updateSite(siteId, { paused: !site.paused });
   }
   if (action === "delete") {
+    if (!window.confirm("确定删除这个阅读来源吗？历史阅读和知识库文章不会被删除。")) return;
     await window.readerApi.deleteSite(siteId);
   }
   await refreshSites();
@@ -1001,6 +1017,7 @@ async function loadSiteReading(siteId) {
 
 async function handleSourceAction(button) {
   if (button.dataset.sourceAction === "delete") {
+    if (!window.confirm("确定移除这个文章入口吗？")) return;
     await window.readerApi.deleteArticleSource(button.dataset.siteId, button.dataset.sourceUrl);
     await refreshSites();
   }
@@ -1050,9 +1067,43 @@ async function refreshAiSettings() {
     elements.aiSettingsStatus.textContent = `${settings.model} · ${sourceLabel}`;
     elements.groqApiKeyInput.placeholder = settings.configured ? "已配置 — 输入新密钥可替换" : "gsk_...";
     elements.groqApiKeyInput.disabled = !settings.secureStorageAvailable && settings.source !== "environment";
+    state.translationConsent = settings.translationConsent === true;
+    if (elements.translationConsentInput) elements.translationConsentInput.checked = state.translationConsent;
+    if (settings.readerPreferences) {
+      state.readerFontSize = clamp(Number(settings.readerPreferences.fontSize), 16, 28);
+      state.readerWidth = clamp(Number(settings.readerPreferences.width), 560, 1040);
+      applyReaderSettings();
+    }
   } catch (error) {
     elements.aiSettingsStatus.textContent = `不可用：${error.message}`;
   }
+}
+
+async function refreshIssueNumber() {
+  if (!elements.issueNumber || !window.readerApi.getKnowledgeStats) return;
+  try {
+    const stats = await window.readerApi.getKnowledgeStats();
+    elements.issueNumber.textContent = `第 ${Math.max(1, Number(stats.total || 0) + 1)} 期`;
+  } catch {
+    elements.issueNumber.textContent = "今日阅读";
+  }
+}
+
+function scheduleReaderPreferenceSave() {
+  clearTimeout(state.preferenceSaveTimer);
+  state.preferenceSaveTimer = setTimeout(() => {
+    window.readerApi.saveReaderPreferences({
+      fontSize: state.readerFontSize,
+      width: state.readerWidth
+    }).catch((error) => reportRuntimeError("reader_preferences_save_failed", error));
+  }, 250);
+}
+
+async function saveTranslationConsent() {
+  const enabled = Boolean(elements.translationConsentInput?.checked);
+  const settings = await window.readerApi.saveTranslationConsent(enabled);
+  state.translationConsent = settings.translationConsent === true;
+  showToast(state.translationConsent ? "远程划词翻译已启用。" : "远程划词翻译已关闭。");
 }
 
 async function saveGroqApiKey(event) {
@@ -1126,6 +1177,7 @@ async function handleBypassAction(button) {
     await window.readerApi.updateBypassSource(sourceId, { priority: Number(source.priority) + 1.5 });
   }
   if (action === "delete") {
+    if (!window.confirm("确定删除这个镜像来源吗？")) return;
     await window.readerApi.deleteBypassSource(sourceId);
   }
   await refreshBypassSources();

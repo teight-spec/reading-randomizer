@@ -56,6 +56,22 @@ test("site health store persists rolling success and failure metrics", async () 
   assert.equal(health.botBlockedRate, 0.5);
 });
 
+test("site health store serializes concurrent records without losing events", async () => {
+  const { SiteHealthStore } = require("../src/main/services/siteHealthStore");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reader-health-concurrent-"));
+  const store = new SiteHealthStore(dir);
+  const site = { id: "site-1", title: "Site", url: "https://example.com/", domain: "example.com" };
+  await Promise.all(Array.from({ length: 20 }, (_, index) => store.record(site, {
+    stageName: "feed",
+    ok: index % 2 === 0,
+    latencyMs: index,
+    failureCategory: index % 2 === 0 ? null : "network"
+  })));
+  const data = JSON.parse(await fs.readFile(store.filePath, "utf8"));
+  assert.equal(data.sites[site.id].events.length, 20);
+  assert.equal((await store.getSiteHealth(site)).successRate, 0.5);
+});
+
 test("ArticleCache recovers from corrupted JSON and backs it up", async () => {
   const { ArticleCache } = require("../src/main/services/articleCache");
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reader-cache-corrupt-"));
@@ -121,6 +137,66 @@ test("writeJsonAtomic writes valid JSON without leaving partial target content",
   await writeJsonAtomic(filePath, { ok: true, count: 1 });
   const parsed = JSON.parse(await fs.readFile(filePath, "utf8"));
   assert.deepEqual(parsed, { ok: true, count: 1 });
+  assert.equal((await fs.stat(filePath)).mode & 0o777, 0o600);
+});
+
+test("TranslationStore migrates plaintext source-text cache keys to hashes", async () => {
+  const { TranslationStore } = require("../src/main/services/translationStore");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reader-translation-cache-"));
+  const store = new TranslationStore(dir);
+  const plaintextKey = "auto:zh-CN:private selected source text";
+  await fs.writeFile(store.filePath, JSON.stringify({
+    version: 1,
+    items: {
+      [plaintextKey]: {
+        translatedText: "译文",
+        provider: "test",
+        savedAt: new Date().toISOString()
+      }
+    }
+  }), "utf8");
+  const data = await store.load();
+  const keys = Object.keys(data.items);
+  assert.equal(keys.length, 1);
+  assert.match(keys[0], /^[a-f0-9]{64}$/);
+  const persisted = await fs.readFile(store.filePath, "utf8");
+  assert.doesNotMatch(persisted, /private selected source text/);
+  assert.equal((await fs.stat(store.filePath)).mode & 0o777, 0o600);
+});
+
+test("article HTML sanitizer removes executable markup and unsafe URLs", () => {
+  const { sanitizeArticleHtml } = require("../src/main/services/htmlSanitizer");
+  const sanitized = sanitizeArticleHtml(`
+    <article onclick="steal()">
+      <script>alert(1)</script>
+      <p style="background:url(javascript:alert(1))">Keep this text.</p>
+      <a href="javascript:alert(2)" onmouseover="steal()">unsafe link</a>
+      <a href="/story">safe link</a>
+      <img src="https://cdn.example.com/image.jpg" onerror="steal()">
+      <img src="data:image/svg+xml,unsafe">
+      <form><input value="secret"><p>drop form content</p></form>
+    </article>
+  `, "https://example.com/base");
+  assert.doesNotMatch(sanitized, /script|onclick|onmouseover|onerror|javascript:|style=|<form|<input/i);
+  assert.match(sanitized, /Keep this text/);
+  assert.match(sanitized, /href="https:\/\/example\.com\/story"/);
+  assert.match(sanitized, /rel="noreferrer noopener"/);
+  assert.match(sanitized, /referrerpolicy="no-referrer"/);
+  assert.doesNotMatch(sanitized, /data:image/);
+});
+
+test("IPC input validation accepts web URLs and rejects unsafe schemes or oversized text", () => {
+  const {
+    normalizeHttpUrl,
+    validateBypassSource,
+    validateTranslationPayload
+  } = require("../src/main/services/inputValidation");
+  assert.equal(normalizeHttpUrl("https://example.com/story#section"), "https://example.com/story");
+  assert.throws(() => normalizeHttpUrl("file:///etc/passwd"), /HTTP or HTTPS/);
+  assert.throws(() => normalizeHttpUrl("javascript:alert(1)"), /HTTP or HTTPS/);
+  assert.throws(() => normalizeHttpUrl("https://user:secret@example.com/"), /credentials/);
+  assert.throws(() => validateBypassSource({ name: "bad", template: "https://mirror.example/" }), /\{url\}/);
+  assert.throws(() => validateTranslationPayload({ text: "x".repeat(5001) }), /too long/);
 });
 
 test("KnowledgeDatabase starts empty and completes reading only after cumulative thresholds", async () => {
@@ -132,6 +208,15 @@ test("KnowledgeDatabase starts empty and completes reading only after cumulative
   }), "utf8");
   const database = new KnowledgeDatabase(dir);
   assert.deepEqual(database.getStats(), { total: 0, analyzed: 0, pending: 0 });
+  assert.deepEqual(
+    database.db.prepare("SELECT version FROM schema_migrations ORDER BY version").all().map((row) => row.version),
+    [1, 2]
+  );
+  assert.equal(
+    database.db.prepare("SELECT COUNT(*) AS count FROM pragma_index_list('articles') WHERE name = 'articles_site_idx'").get().count,
+    1
+  );
+  assert.equal((await fs.stat(database.filePath)).mode & 0o777, 0o600);
 
   const cachedItem = {
     site: { id: "site-1", title: "Example", domain: "example.com" },
@@ -226,11 +311,16 @@ test("SecureSettingsStore encrypts Groq credentials at rest", async () => {
   const store = new SecureSettingsStore(dir, { safeStorage: fakeSafeStorage });
   const key = "test-groq-key-with-enough-length";
   await store.saveGroqApiKey(key);
+  await store.saveTranslationConsent(true);
+  await store.saveReaderPreferences({ fontSize: 21, width: 780 });
   const raw = await fs.readFile(store.filePath, "utf8");
   assert.equal(raw.includes(key), false);
   assert.equal((await fs.stat(store.filePath)).mode & 0o777, 0o600);
   assert.equal(await store.getGroqApiKey(), key);
-  assert.equal((await store.getPublicSettings()).configured, true);
+  const publicSettings = await store.getPublicSettings();
+  assert.equal(publicSettings.configured, true);
+  assert.equal(publicSettings.translationConsent, true);
+  assert.deepEqual(publicSettings.readerPreferences, { fontSize: 21, width: 780 });
 });
 
 test("GroqAnalyzer requests deterministic JSON and normalizes Chinese knowledge output", async () => {
@@ -293,6 +383,15 @@ test("extraction quality evaluator distinguishes article-like text from boilerpl
   });
   assert.ok(good.qualityScore > bad.qualityScore);
   assert.equal(bad.acceptable, false);
+});
+
+test("candidate filter rejects topic hubs, games, and sponsored utility content", () => {
+  const { looksLikeArticleUrl, isSponsoredLike } = require("../src/main/services/candidateFilter");
+  assert.equal(looksLikeArticleUrl("https://www.bbc.com/news/topics/cp7r8vgl2y7t"), false);
+  assert.equal(looksLikeArticleUrl("https://slate.com/life/2026/08/crossword-puzzle.html"), false);
+  assert.equal(looksLikeArticleUrl("https://example.com/lecturers/person/profile"), false);
+  assert.equal(looksLikeArticleUrl("https://example.com/2026/08/a-real-reported-story"), true);
+  assert.equal(isSponsoredLike("Daily Crossword", "https://example.com/story"), true);
 });
 
 test("reader fixtures keep long-form and archive extraction complete", async () => {
@@ -375,6 +474,25 @@ test("runtime health report summarizes persisted health signals", () => {
   assert.equal(report.summary.browserCleanupFailures, 1);
   assert.match(renderRuntimeHealthReport(report), /Runtime Health Report/);
   assert.match(renderRuntimeHealthReport(report), /Needs attention/);
+});
+
+test("runtime health report labels uncollected signals instead of reporting false zeroes", () => {
+  const { buildRuntimeHealthReport, renderRuntimeHealthReport } = require("../src/main/services/runtimeHealthReport");
+  const report = buildRuntimeHealthReport();
+  assert.equal(report.complete, false);
+  assert.equal(report.ok, false);
+  assert.equal(report.summary.requestFailures, null);
+  assert.match(renderRuntimeHealthReport(report), /Status: Incomplete/);
+  assert.match(renderRuntimeHealthReport(report), /Request failures: not collected/);
+});
+
+test("request logging redacts query values and sensitive translation URLs", () => {
+  const { formatUrlForLog } = require("../src/main/services/requestGovernor");
+  const ordinary = formatUrlForLog("https://example.com/search?q=private+selection&token=secret#result");
+  const sensitive = formatUrlForLog("https://translate.example/api?q=private+selection", { sensitiveUrl: true });
+  assert.equal(ordinary, "https://example.com/search?[redacted]");
+  assert.equal(sensitive, "https://translate.example/api");
+  assert.doesNotMatch(`${ordinary} ${sensitive}`, /private|secret/);
 });
 
 test("RequestGovernor retries once and returns successful response", async () => {

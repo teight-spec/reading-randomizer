@@ -1,4 +1,5 @@
 const crypto = require("node:crypto");
+const fs = require("node:fs");
 const path = require("node:path");
 
 const DEFAULT_CATEGORIES = [
@@ -21,15 +22,19 @@ const READ_THRESHOLDS = {
 class KnowledgeDatabase {
   constructor(userDataPath, { DatabaseSyncImpl } = {}) {
     const DatabaseSync = DatabaseSyncImpl || require("node:sqlite").DatabaseSync;
+    fs.mkdirSync(userDataPath, { recursive: true, mode: 0o700 });
     this.filePath = path.join(userDataPath, "reading-knowledge.db");
     this.db = new DatabaseSync(this.filePath, { timeout: 5000 });
     this.initialize();
+    this.tightenPermissions();
   }
 
   initialize() {
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA foreign_keys = ON");
     this.db.exec("PRAGMA busy_timeout = 5000");
+    this.db.exec("PRAGMA secure_delete = ON");
+    this.db.exec("PRAGMA wal_autocheckpoint = 500");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
         version INTEGER PRIMARY KEY,
@@ -149,6 +154,55 @@ class KnowledgeDatabase {
       SET status = 'pending', updated_at = ?
       WHERE status = 'running'
     `).run(nowIso());
+    this.applyMigrations();
+  }
+
+  applyMigrations() {
+    const migrations = [
+      {
+        version: 2,
+        up: () => this.db.exec(`
+          CREATE INDEX IF NOT EXISTS articles_site_idx
+            ON articles(site_domain, completed_at DESC);
+          CREATE INDEX IF NOT EXISTS reading_sessions_completed_idx
+            ON reading_sessions(completed_at, last_seen_at DESC);
+        `)
+      }
+    ];
+    const row = this.db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations").get();
+    const currentVersion = Number(row?.version || 0);
+    const pending = migrations.filter((migration) => migration.version > currentVersion);
+    if (!pending.length) return;
+    this.backupBeforeMigration(currentVersion);
+    for (const migration of pending) {
+      this.transaction(() => {
+        migration.up();
+        this.db.prepare(`
+          INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)
+        `).run(migration.version, nowIso());
+      });
+    }
+  }
+
+  backupBeforeMigration(currentVersion) {
+    const articleCount = Number(this.db.prepare("SELECT COUNT(*) AS total FROM articles").get()?.total || 0);
+    if (!articleCount || !fs.existsSync(this.filePath)) return null;
+    const backupPath = `${this.filePath}.backup-v${currentVersion}`;
+    if (fs.existsSync(backupPath)) return backupPath;
+    this.db.exec("PRAGMA wal_checkpoint(FULL)");
+    fs.copyFileSync(this.filePath, backupPath, fs.constants.COPYFILE_EXCL);
+    fs.chmodSync(backupPath, 0o600);
+    return backupPath;
+  }
+
+  tightenPermissions() {
+    for (const filePath of [this.filePath, `${this.filePath}-wal`, `${this.filePath}-shm`]) {
+      try {
+        if (fs.existsSync(filePath)) fs.chmodSync(filePath, 0o600);
+      } catch {
+        // The database remains usable if the platform refuses a permission change.
+      }
+    }
   }
 
   recordProgress(payload = {}, cachedItem = null) {
@@ -618,7 +672,14 @@ class KnowledgeDatabase {
   }
 
   close() {
-    if (this.db?.isOpen !== false) this.db.close();
+    if (this.db?.isOpen !== false) {
+      try {
+        this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+      } catch {
+        // Shutdown should proceed even when checkpointing is unavailable.
+      }
+      this.db.close();
+    }
   }
 }
 

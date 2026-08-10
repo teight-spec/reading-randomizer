@@ -4,6 +4,7 @@ const { createRequestGovernance, classifyFailure } = require("./requestGovernanc
 const { resolveSiteStrategy } = require("./siteStrategies");
 const { evaluateExtractionQuality } = require("./extractionQualityEvaluator");
 const { BrowserExtractionController, isWindowUsable } = require("./browserExtractionController");
+const { sanitizeArticleHtml } = require("./htmlSanitizer");
 
 const READER_TIMEOUT_MS = 9000;
 const BROWSER_STABILIZE_TIMEOUT_MS = 2500;
@@ -530,6 +531,7 @@ function extractMergedArticle(url, html, fallbackPublishedAt, diagnostics = {}) 
 }
 
 function withDiagnostics(article, diagnostics) {
+  article.content = sanitizeArticleHtml(article.content, article.url);
   const quality = evaluateExtractionQuality(article);
   article.diagnostics = {
     ...diagnostics,

@@ -12,9 +12,11 @@ class SiteHealthStore {
   constructor(userDataPath) {
     this.filePath = path.join(userDataPath, "site-health.json");
     this.writePromise = Promise.resolve();
+    this.operationPromise = Promise.resolve();
   }
 
   async load() {
+    await this.writePromise.catch(() => {});
     try {
       const raw = await fs.readFile(this.filePath, "utf8");
       return { ...structuredClone(EMPTY_HEALTH), ...JSON.parse(raw) };
@@ -35,33 +37,37 @@ class SiteHealthStore {
   }
 
   async record(site, event) {
-    const data = await this.load();
-    const key = siteKey(site);
-    const current = data.sites[key] || createEmptyHealth(site);
-    current.domain = domainFor(site);
-    current.siteId = site.id || current.siteId;
-    current.siteTitle = site.title || current.siteTitle;
-    current.events = [
-      {
-        stageName: event.stageName || "unknown",
-        ok: Boolean(event.ok),
-        latencyMs: Number(event.latencyMs || 0),
-        strategySource: event.strategySource || "generic",
-        failureCategory: event.failureCategory || null,
-        fallbackReason: event.fallbackReason || null,
-        parserUsed: event.parserUsed || null,
-        qualityScore: event.qualityScore ?? null,
-        cost: event.cost ?? null,
-        antiBotType: event.antiBotType || null,
-        traceId: event.traceId || null,
-        at: new Date().toISOString()
-      },
-      ...(current.events || [])
-    ].slice(0, MAX_EVENTS);
-    recompute(current);
-    data.sites[key] = current;
-    await this.save(data);
-    return current;
+    const operation = this.operationPromise.catch(() => {}).then(async () => {
+      const data = await this.load();
+      const key = siteKey(site);
+      const current = data.sites[key] || createEmptyHealth(site);
+      current.domain = domainFor(site);
+      current.siteId = site.id || current.siteId;
+      current.siteTitle = site.title || current.siteTitle;
+      current.events = [
+        {
+          stageName: event.stageName || "unknown",
+          ok: Boolean(event.ok),
+          latencyMs: Number(event.latencyMs || 0),
+          strategySource: event.strategySource || "generic",
+          failureCategory: event.failureCategory || null,
+          fallbackReason: event.fallbackReason || null,
+          parserUsed: event.parserUsed || null,
+          qualityScore: event.qualityScore ?? null,
+          cost: event.cost ?? null,
+          antiBotType: event.antiBotType || null,
+          traceId: event.traceId || null,
+          at: new Date().toISOString()
+        },
+        ...(current.events || [])
+      ].slice(0, MAX_EVENTS);
+      recompute(current);
+      data.sites[key] = current;
+      await this.save(data);
+      return current;
+    });
+    this.operationPromise = operation.catch(() => {});
+    return operation;
   }
 }
 

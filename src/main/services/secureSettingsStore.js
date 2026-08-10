@@ -17,11 +17,21 @@ class SecureSettingsStore {
       return {
         version: 1,
         groqEncryptedKey: typeof parsed.groqEncryptedKey === "string" ? parsed.groqEncryptedKey : "",
-        groqModel: typeof parsed.groqModel === "string" && parsed.groqModel ? parsed.groqModel : DEFAULT_MODEL
+        groqModel: typeof parsed.groqModel === "string" && parsed.groqModel ? parsed.groqModel : DEFAULT_MODEL,
+        translationConsent: parsed.translationConsent === true,
+        readerFontSize: clampNumber(parsed.readerFontSize, 16, 28, 20),
+        readerWidth: clampNumber(parsed.readerWidth, 560, 1040, 720)
       };
     } catch (error) {
       if (error.code === "ENOENT") {
-        return { version: 1, groqEncryptedKey: "", groqModel: DEFAULT_MODEL };
+        return {
+          version: 1,
+          groqEncryptedKey: "",
+          groqModel: DEFAULT_MODEL,
+          translationConsent: false,
+          readerFontSize: 20,
+          readerWidth: 720
+        };
       }
       throw error;
     }
@@ -60,6 +70,28 @@ class SecureSettingsStore {
     return String(process.env.GROQ_MODEL || "").trim() || (await this.load()).groqModel || DEFAULT_MODEL;
   }
 
+  async saveTranslationConsent(enabled) {
+    if (typeof enabled !== "boolean") throw new Error("Translation consent must be a boolean");
+    const settings = await this.load();
+    settings.translationConsent = enabled;
+    await writeJsonAtomic(this.filePath, settings);
+    await fs.chmod(this.filePath, 0o600);
+    return this.getPublicSettings();
+  }
+
+  async saveReaderPreferences(patch = {}) {
+    const settings = await this.load();
+    if (patch.fontSize !== undefined) {
+      settings.readerFontSize = clampNumber(patch.fontSize, 16, 28, settings.readerFontSize);
+    }
+    if (patch.width !== undefined) {
+      settings.readerWidth = clampNumber(patch.width, 560, 1040, settings.readerWidth);
+    }
+    await writeJsonAtomic(this.filePath, settings);
+    await fs.chmod(this.filePath, 0o600);
+    return this.getPublicSettings();
+  }
+
   async getPublicSettings() {
     const environmentConfigured = Boolean(String(process.env.GROQ_API_KEY || "").trim());
     const settings = await this.load();
@@ -67,13 +99,33 @@ class SecureSettingsStore {
       configured: environmentConfigured || Boolean(settings.groqEncryptedKey && this.canEncrypt()),
       source: environmentConfigured ? "environment" : settings.groqEncryptedKey ? "secure-storage" : "none",
       model: String(process.env.GROQ_MODEL || "").trim() || settings.groqModel || DEFAULT_MODEL,
-      secureStorageAvailable: this.canEncrypt()
+      secureStorageAvailable: this.canEncrypt(),
+      translationConsent: settings.translationConsent === true,
+      readerPreferences: {
+        fontSize: clampNumber(settings.readerFontSize, 16, 28, 20),
+        width: clampNumber(settings.readerWidth, 560, 1040, 720)
+      }
     };
   }
 
   canEncrypt() {
-    return Boolean(this.safeStorage?.isEncryptionAvailable?.());
+    const hasCryptoMethods = Boolean(
+      this.safeStorage?.encryptString &&
+      this.safeStorage?.decryptString
+    );
+    if (!hasCryptoMethods) return false;
+    if (["darwin", "win32"].includes(process.platform)) return true;
+    try {
+      return Boolean(this.safeStorage?.isEncryptionAvailable?.());
+    } catch {
+      return false;
+    }
   }
+}
+
+function clampNumber(value, min, max, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback;
 }
 
 module.exports = {

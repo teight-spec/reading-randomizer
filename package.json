@@ -2,13 +2,17 @@
   "name": "reading-randomizer",
   "version": "0.1.0",
   "private": true,
-  "description": "Cross-platform reading randomizer MVP for Chrome bookmarks.",
+  "description": "Reading-first desktop app with source rotation, translation, and a local knowledge library.",
+  "author": "teight-spec",
   "main": "src/main/main.js",
   "scripts": {
     "dev": "electron .",
     "start": "electron .",
     "check": "node scripts/smoke-check.js",
     "test": "node scripts/run-tests.js",
+    "verify": "npm run check && npm test",
+    "pack:mac": "electron-builder --mac dir --publish never",
+    "dist:mac": "electron-builder --mac dmg zip --publish never",
     "launcher:mac": "node scripts/create-mac-launcher.js",
     "audit:library": "electron scripts/audit-library.js",
     "health:report": "electron scripts/health-report.js",
@@ -20,6 +24,40 @@
     "jsdom": "^29.1.1"
   },
   "devDependencies": {
-    "electron": "^42.0.1"
+    "electron": "^42.8.1",
+    "electron-builder": "^26.15.3"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "build": {
+    "appId": "com.teightspec.reading-randomizer",
+    "productName": "随阅",
+    "asar": true,
+    "files": [
+      "src/**/*",
+      "assets/app-icon.icns",
+      "assets/app-icon-1024.png",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.education",
+      "icon": "assets/app-icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "dmg": {
+      "title": "随阅 ${version}"
+    },
+    "artifactName": "reading-randomizer-${version}-${arch}.${ext}",
+    "publish": {
+      "provider": "github",
+      "owner": "teight-spec",
+      "repo": "reading-randomizer"
+    }
   }
 }

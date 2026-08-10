@@ -13,6 +13,7 @@ const EMPTY_HISTORY = {
 class HistoryStore {
   constructor(userDataPath) {
     this.filePath = path.join(userDataPath, "reading-history.json");
+    this.operationPromise = Promise.resolve();
   }
 
   async load() {
@@ -32,50 +33,47 @@ class HistoryStore {
   }
 
   async markRead(site, article) {
-    const history = await this.load();
-    history.readArticles.unshift({
-      siteId: site.id,
-      siteTitle: site.title,
-      siteUrl: site.url,
-      articleTitle: article.title,
-      articleUrl: article.url,
-      readAt: new Date().toISOString()
-    });
-    history.readArticles = history.readArticles.slice(0, 1000);
-    await this.save(history);
-    return history;
-  }
-
-  async markOpened(site, article) {
-    const history = await this.load();
-    history.openedArticles = history.openedArticles || [];
-    if (!history.openedArticles.some((item) => item.articleUrl === article.url)) {
-      history.openedArticles.unshift({
+    return this.mutate((history) => {
+      history.readArticles.unshift({
         siteId: site.id,
         siteTitle: site.title,
         siteUrl: site.url,
         articleTitle: article.title,
         articleUrl: article.url,
-        openedAt: new Date().toISOString()
+        readAt: new Date().toISOString()
       });
-    }
-    history.openedArticles = history.openedArticles.slice(0, 2000);
-    await this.save(history);
-    return history;
+      history.readArticles = history.readArticles.slice(0, 1000);
+      return history;
+    });
+  }
+
+  async markOpened(site, article) {
+    return this.mutate((history) => {
+      history.openedArticles = history.openedArticles || [];
+      if (!history.openedArticles.some((item) => item.articleUrl === article.url)) {
+        history.openedArticles.unshift({
+          siteId: site.id,
+          siteTitle: site.title,
+          siteUrl: site.url,
+          articleTitle: article.title,
+          articleUrl: article.url,
+          openedAt: new Date().toISOString()
+        });
+      }
+      history.openedArticles = history.openedArticles.slice(0, 2000);
+      return history;
+    });
   }
 
   async markSiteVisited(site) {
-    const history = await this.load();
-    const siteIds = new Set((await this.getCurrentActiveSiteIds()).length ? await this.getCurrentActiveSiteIds() : [site.id]);
-    let usedSiteIds = (history.siteRound?.usedSiteIds || []).filter((id) => siteIds.has(id));
-
-    if (!usedSiteIds.includes(site.id)) {
-      usedSiteIds.push(site.id);
-    }
-
-    history.siteRound = { usedSiteIds };
-    await this.save(history);
-    return history;
+    return this.mutate(async (history) => {
+      const activeSiteIds = await this.getCurrentActiveSiteIds();
+      const siteIds = new Set(activeSiteIds.length ? activeSiteIds : [site.id]);
+      const usedSiteIds = (history.siteRound?.usedSiteIds || []).filter((id) => siteIds.has(id));
+      if (!usedSiteIds.includes(site.id)) usedSiteIds.push(site.id);
+      history.siteRound = { usedSiteIds };
+      return history;
+    });
   }
 
   setActiveSiteIds(siteIds) {
@@ -118,6 +116,17 @@ class HistoryStore {
     const usedSet = new Set(usedSiteIds);
     const candidates = shuffle(sites.filter((site) => !usedSet.has(site.id)));
     return candidates.slice(0, Math.max(1, count));
+  }
+
+  async mutate(mutator) {
+    const operation = this.operationPromise.catch(() => {}).then(async () => {
+      const history = await this.load();
+      const result = await mutator(history);
+      await this.save(history);
+      return result;
+    });
+    this.operationPromise = operation.catch(() => {});
+    return operation;
   }
 }
 

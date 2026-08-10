@@ -1,6 +1,7 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { writeJsonAtomic } = require("./jsonFile");
+const { normalizeBypassTemplate, normalizeHttpUrl } = require("./inputValidation");
 
 const DEFAULT_BYPASS_SOURCES = [
   {
@@ -56,16 +57,15 @@ class BypassRegistry {
   }
 
   async addSource({ name, template }) {
-    if (!name?.trim() || !template?.includes("{url}")) {
-      throw new Error("Bypass source needs a name and a template containing {url}");
-    }
+    const safeTemplate = normalizeBypassTemplate(template);
+    if (!name?.trim()) throw new Error("Bypass source needs a name");
 
     const data = await this.load();
     const maxPriority = Math.max(0, ...data.sources.map((source) => Number(source.priority || 0)));
     const source = {
-      id: Buffer.from(`${name}:${template}`).toString("base64url"),
+      id: Buffer.from(`${name}:${safeTemplate}`).toString("base64url"),
       name: name.trim(),
-      template: template.trim(),
+      template: safeTemplate,
       enabled: true,
       priority: maxPriority + 1
     };
@@ -82,7 +82,7 @@ class BypassRegistry {
     }
 
     if (typeof patch.name === "string") source.name = patch.name.trim() || source.name;
-    if (typeof patch.template === "string" && patch.template.includes("{url}")) source.template = patch.template.trim();
+    if (typeof patch.template === "string") source.template = normalizeBypassTemplate(patch.template);
     if (typeof patch.enabled === "boolean") source.enabled = patch.enabled;
     if (Number.isFinite(Number(patch.priority))) source.priority = Number(patch.priority);
 
@@ -98,14 +98,23 @@ class BypassRegistry {
   }
 
   async getBypassUrls(articleUrl) {
+    const safeArticleUrl = normalizeHttpUrl(articleUrl, { label: "Article URL" });
     const data = await this.load();
     return data.sources
       .filter((source) => source.enabled)
       .sort((a, b) => Number(a.priority || 0) - Number(b.priority || 0))
-      .map((source) => ({
-        ...source,
-        url: source.template.replace("{url}", encodeURIComponent(articleUrl))
-      }));
+      .flatMap((source) => {
+        try {
+          const template = normalizeBypassTemplate(source.template);
+          return [{
+            ...source,
+            template,
+            url: template.replace("{url}", encodeURIComponent(safeArticleUrl))
+          }];
+        } catch {
+          return [];
+        }
+      });
   }
 }
 

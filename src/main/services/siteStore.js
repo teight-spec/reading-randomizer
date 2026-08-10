@@ -2,6 +2,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { readChromeBookmarks } = require("./bookmarks");
 const { writeJsonAtomic } = require("./jsonFile");
+const { normalizeHttpUrl } = require("./inputValidation");
 
 const EMPTY_SOURCES = {
   sites: [],
@@ -11,6 +12,7 @@ const EMPTY_SOURCES = {
 class SiteStore {
   constructor(userDataPath) {
     this.filePath = path.join(userDataPath, "sites.json");
+    this.operationPromise = Promise.resolve();
   }
 
   async load() {
@@ -54,118 +56,96 @@ class SiteStore {
   }
 
   async importChromeBookmarks() {
-    const data = await this.load();
     const bookmarks = await readChromeBookmarks();
-    const existingUrls = new Set(data.sites.map((site) => normalizeUrl(site.url)));
-    const importedSites = [];
+    return this.mutate((data) => {
+      const existingUrls = new Set(data.sites.map((site) => normalizeUrl(site.url)));
+      const importedSites = [];
 
-    for (const site of bookmarks.sites) {
-      const normalized = normalizeUrl(site.url);
-      if (existingUrls.has(normalized)) {
-        continue;
+      for (const site of bookmarks.sites) {
+        const normalized = normalizeUrl(site.url);
+        if (!normalized || existingUrls.has(normalized)) continue;
+        importedSites.push({
+          ...site,
+          url: normalized,
+          domain: getDomain(normalized),
+          folderPath: normalizeFolderPath(site.folderPath),
+          articleSources: guessDefaultSources(normalized),
+          source: "chrome-bookmark",
+          paused: false,
+          createdAt: new Date().toISOString()
+        });
+        existingUrls.add(normalized);
       }
 
-      importedSites.push({
-        ...site,
-        folderPath: normalizeFolderPath(site.folderPath),
-        articleSources: guessDefaultSources(site.url),
-        source: "chrome-bookmark",
-        paused: false,
-        createdAt: new Date().toISOString()
-      });
-      existingUrls.add(normalized);
-    }
-
-    data.sites.push(...importedSites);
-    data.importedChromeAt = new Date().toISOString();
-    await this.save(data);
-
-    return {
-      ...bookmarks,
-      importedCount: importedSites.length,
-      totalSites: data.sites.length
-    };
+      data.sites.push(...importedSites);
+      data.importedChromeAt = new Date().toISOString();
+      return {
+        ...bookmarks,
+        importedCount: importedSites.length,
+        totalSites: data.sites.length
+      };
+    });
   }
 
   async addSite({ title, url, folderPath, feedUrl }) {
-    const data = await this.load();
     const normalized = normalizeUrl(url);
-    if (!normalized) {
-      throw new Error("Invalid URL");
-    }
-
-    const existing = data.sites.find((site) => normalizeUrl(site.url) === normalized);
-    if (existing) {
-      return existing;
-    }
-
-    const site = {
-      id: stableSiteId(normalized),
-      title: title?.trim() || getDomain(normalized),
-      url: normalized,
-      domain: getDomain(normalized),
-      folderPath: normalizeFolderPath(folderPath || "Manual"),
-      articleSources: feedUrl ? [{ type: "feed", url: normalizeUrl(feedUrl), title: "Manual feed" }] : guessDefaultSources(normalized),
-      source: "manual",
-      paused: false,
-      createdAt: new Date().toISOString()
-    };
-
-    data.sites.push(site);
-    await this.save(data);
-    return site;
+    if (!normalized) throw new Error("Invalid URL");
+    return this.mutate((data) => {
+      const existing = data.sites.find((site) => normalizeUrl(site.url) === normalized);
+      if (existing) return existing;
+      const site = {
+        id: stableSiteId(normalized),
+        title: title?.trim() || getDomain(normalized),
+        url: normalized,
+        domain: getDomain(normalized),
+        folderPath: normalizeFolderPath(folderPath || "Manual"),
+        articleSources: feedUrl ? [{ type: "feed", url: normalizeUrl(feedUrl), title: "Manual feed" }] : guessDefaultSources(normalized),
+        source: "manual",
+        paused: false,
+        createdAt: new Date().toISOString()
+      };
+      data.sites.push(site);
+      return site;
+    });
   }
 
   async updateSite(siteId, patch) {
-    const data = await this.load();
-    const site = data.sites.find((item) => item.id === siteId);
-    if (!site) {
-      throw new Error("Site not found");
-    }
-
-    if (typeof patch.title === "string") {
-      site.title = patch.title.trim() || site.title;
-    }
-    if (typeof patch.paused === "boolean") {
-      site.paused = patch.paused;
-    }
-    if (typeof patch.folderPath === "string") {
-      site.folderPath = normalizeFolderPath(patch.folderPath);
-    }
-
-    await this.save(data);
-    return site;
+    return this.mutate((data) => {
+      const site = data.sites.find((item) => item.id === siteId);
+      if (!site) throw new Error("Site not found");
+      if (typeof patch.title === "string") site.title = patch.title.trim() || site.title;
+      if (typeof patch.paused === "boolean") site.paused = patch.paused;
+      if (typeof patch.folderPath === "string") site.folderPath = normalizeFolderPath(patch.folderPath);
+      return site;
+    });
   }
 
   async addArticleSource(siteId, { type = "feed", url, title }) {
-    const data = await this.load();
-    const site = data.sites.find((item) => item.id === siteId);
-    if (!site) throw new Error("Site not found");
-
     const normalized = normalizeUrl(url);
     if (!normalized) throw new Error("Invalid article source URL");
-
-    site.articleSources = site.articleSources || [];
-    if (!site.articleSources.some((source) => source.url === normalized)) {
-      site.articleSources.push({
-        type,
-        url: normalized,
-        title: title?.trim() || normalized,
-        createdAt: new Date().toISOString()
-      });
-    }
-
-    await this.save(data);
-    return site;
+    return this.mutate((data) => {
+      const site = data.sites.find((item) => item.id === siteId);
+      if (!site) throw new Error("Site not found");
+      site.articleSources = site.articleSources || [];
+      if (!site.articleSources.some((source) => source.url === normalized)) {
+        site.articleSources.push({
+          type,
+          url: normalized,
+          title: title?.trim() || normalized,
+          createdAt: new Date().toISOString()
+        });
+      }
+      return site;
+    });
   }
 
   async deleteArticleSource(siteId, sourceUrl) {
-    const data = await this.load();
-    const site = data.sites.find((item) => item.id === siteId);
-    if (!site) throw new Error("Site not found");
-    site.articleSources = (site.articleSources || []).filter((source) => source.url !== sourceUrl);
-    await this.save(data);
-    return site;
+    return this.mutate((data) => {
+      const site = data.sites.find((item) => item.id === siteId);
+      if (!site) throw new Error("Site not found");
+      site.articleSources = (site.articleSources || []).filter((source) => source.url !== sourceUrl);
+      return site;
+    });
   }
 
   async getTree() {
@@ -182,18 +162,27 @@ class SiteStore {
   }
 
   async deleteSite(siteId) {
-    const data = await this.load();
-    data.sites = data.sites.filter((site) => site.id !== siteId);
-    await this.save(data);
-    return data.sites;
+    return this.mutate((data) => {
+      data.sites = data.sites.filter((site) => site.id !== siteId);
+      return data.sites;
+    });
+  }
+
+  async mutate(mutator) {
+    const operation = this.operationPromise.catch(() => {}).then(async () => {
+      const data = await this.load();
+      const result = await mutator(data);
+      await this.save(data);
+      return result;
+    });
+    this.operationPromise = operation.catch(() => {});
+    return operation;
   }
 }
 
 function normalizeUrl(url) {
   try {
-    const parsed = new URL(url);
-    parsed.hash = "";
-    return parsed.toString();
+    return normalizeHttpUrl(url);
   } catch {
     return "";
   }

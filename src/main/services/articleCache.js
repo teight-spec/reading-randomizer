@@ -19,17 +19,23 @@ class ArticleCache {
     this.writePromise = Promise.resolve();
     this.operationPromise = Promise.resolve();
     this.recoveryPromise = null;
+    this.memoryCache = null;
   }
 
   async load() {
     await this.writePromise.catch(() => {});
+    if (this.memoryCache) return this.memoryCache;
     try {
       const raw = await fs.readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw);
       validateCacheShape(parsed);
-      return normalizeCache(parsed);
+      this.memoryCache = normalizeCache(parsed);
+      return this.memoryCache;
     } catch (error) {
-      if (error.code === "ENOENT") return structuredClone(EMPTY_CACHE);
+      if (error.code === "ENOENT") {
+        this.memoryCache = structuredClone(EMPTY_CACHE);
+        return this.memoryCache;
+      }
       if (error instanceof SyntaxError || error.code === "CACHE_SCHEMA_INVALID") {
         return this.recoverCorruptedCache(error);
       }
@@ -42,7 +48,10 @@ class ArticleCache {
     normalized.updatedAt = new Date().toISOString();
     prune(normalized);
     const text = JSON.stringify(normalized, null, 2);
-    this.writePromise = this.writePromise.catch(() => {}).then(() => this.writeAtomic(text));
+    this.writePromise = this.writePromise.catch(() => {}).then(async () => {
+      await this.writeAtomic(text);
+      this.memoryCache = normalized;
+    });
     return this.writePromise;
   }
 
@@ -146,7 +155,7 @@ class ArticleCache {
 
   async mutate(mutator) {
     const operation = this.operationPromise.catch(() => {}).then(async () => {
-      const cache = await this.load();
+      const cache = structuredClone(await this.load());
       const result = await mutator(cache);
       await this.save(cache);
       return result;
@@ -216,9 +225,20 @@ class ArticleCache {
       dir,
       `${path.basename(this.filePath)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`
     );
-    await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(tempPath, text, "utf8");
-    await fs.rename(tempPath, this.filePath);
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+    try {
+      await fs.chmod(dir, 0o700);
+    } catch {
+      // Keep cache writes functional if directory permissions cannot be tightened.
+    }
+    try {
+      await fs.writeFile(tempPath, text, { encoding: "utf8", mode: 0o600 });
+      await fs.chmod(tempPath, 0o600);
+      await fs.rename(tempPath, this.filePath);
+    } catch (error) {
+      await fs.rm(tempPath, { force: true }).catch(() => {});
+      throw error;
+    }
     logCache("cache_write_complete", {
       path: this.filePath,
       tempPath,

@@ -6,8 +6,8 @@ This document is the maintenance handoff for the current reader architecture. Th
 
 ```text
 Renderer UI
-  -> preload readerApi
-  -> main IPC handlers
+  -> sandboxed preload readerApi
+  -> trusted-origin IPC handlers + input validation
   -> ArticlePrefetcher
   -> ArticlePipeline
       -> Policy Layer
@@ -16,7 +16,9 @@ Renderer UI
       -> feed/sitemap/browser/archive capabilities
   -> RequestGovernor
   -> parser/readability/browser extraction
-  -> ArticleCache / SiteHealthStore
+  -> HTML allowlist sanitizer
+  -> ArticleCache / SiteHealthStore / RuntimeDiagnosticsStore
+  -> SQLite KnowledgeDatabase / migration backups
 ```
 
 Key boundaries:
@@ -28,6 +30,8 @@ Key boundaries:
 - `SiteHealthStore` owns rolling strategy health.
 - `pipelineReplayReport` explains single-run decisions.
 - `runtimeHealthReport` summarizes persisted runtime health signals.
+- `htmlSanitizer` is the final trust boundary before extracted article HTML reaches the renderer.
+- `inputValidation` is the shared IPC and store URL boundary.
 
 ## Runtime Lifecycle
 
@@ -47,6 +51,7 @@ All IPC calls now emit:
 - `ipc_failed`
 
 Renderer errors are reported through `readerApi.reportRendererError`.
+Only the main local renderer URL is accepted as an IPC sender. Main and hidden windows run with Chromium sandboxing, deny popup windows, and reject unsafe navigation schemes.
 
 ## BrowserWindow Governance
 
@@ -121,14 +126,15 @@ The report summarizes:
 - extraction quality failures
 
 This is intentionally a lightweight CLI report, not a dashboard.
+Metrics that were not collected are reported as `not collected`; they are never represented as a successful zero.
 
 ## Test Workflow
 
 Run before release:
 
 ```bash
-npm run check
-npm test
+npm run verify
+npm audit
 ```
 
 Optional diagnostics:
@@ -210,6 +216,12 @@ When changing BrowserWindow logic:
 - [x] IPC has structured start/success/failure logs.
 - [x] Renderer runtime errors are reported.
 - [x] CSP is present.
+- [x] Renderer and hidden BrowserWindows use sandboxing and navigation guards.
+- [x] IPC sender identity and payloads are validated.
+- [x] Extracted article HTML is sanitized through an allowlist.
+- [x] Translation requires explicit local consent and sensitive query values are redacted from logs.
+- [x] JSON stores serialize concurrent mutations and use restrictive file permissions.
+- [x] SQLite schema migrations and pre-migration backups exist.
 - [x] Electron net browser-only headers are stripped.
 - [x] BrowserWindow cleanup is guarded.
 - [x] Reader/browser discovery JavaScript execution checks destroyed state.
@@ -217,5 +229,7 @@ When changing BrowserWindow logic:
 - [x] Fixture parser regressions exist.
 - [x] Smoke check passes.
 - [x] Unit/regression tests pass.
+- [x] macOS packaging and GitHub Actions workflows exist.
 - [ ] Run a real manual reading session across 5-10 sites before packaging.
 - [ ] Review `npm run health:runtime` after manual use.
+- [ ] Configure Developer ID signing and notarization before public distribution.

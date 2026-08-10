@@ -1,33 +1,50 @@
 function buildRuntimeHealthReport({
-  networkErrors = [],
-  articleHealth = {},
-  siteHealth = {},
-  browserMetrics = {},
-  replayReports = []
+  networkErrors = null,
+  articleHealth = null,
+  siteHealth = null,
+  browserMetrics = null,
+  replayReports = null
 } = {}) {
-  const ipcFailures = networkErrors.filter((event) => event.probableModule === "ipc" || event.channel);
-  const requestFailures = networkErrors.filter((event) => event.error || event.statusCode >= 400);
-  const parserFailures = Object.values(articleHealth).filter((item) => item.lastError);
-  const cleanupFailures = Number(browserMetrics.cleanupFailures || 0);
-  const antiBotSuppression = Object.values(siteHealth.sites || {}).filter((item) => Number(item.botBlockedRate || 0) > 0);
-  const replayInconsistencies = replayReports.filter((report) => report?.json?.integrity && !report.json.integrity.ok);
-  const extractionQualityFailures = Object.values(siteHealth.sites || {}).filter((item) => {
+  const networkCollected = Array.isArray(networkErrors);
+  const articleHealthCollected = Boolean(articleHealth && typeof articleHealth === "object");
+  const siteHealthCollected = Boolean(siteHealth && typeof siteHealth === "object");
+  const browserMetricsCollected = Boolean(browserMetrics && typeof browserMetrics === "object");
+  const replayCollected = Array.isArray(replayReports);
+  const safeNetworkErrors = networkCollected ? networkErrors : [];
+  const safeArticleHealth = articleHealthCollected ? articleHealth : {};
+  const safeSiteHealth = siteHealthCollected ? siteHealth : {};
+  const safeReplayReports = replayCollected ? replayReports : [];
+  const ipcFailures = safeNetworkErrors.filter((event) => event.probableModule === "ipc" || event.channel);
+  const requestFailures = safeNetworkErrors.filter((event) => {
+    const isIpc = event.probableModule === "ipc" || event.channel;
+    return !isIpc && (event.error || event.statusCode >= 400);
+  });
+  const parserFailures = Object.values(safeArticleHealth).filter((item) => item.lastError);
+  const cleanupFailures = browserMetricsCollected ? Number(browserMetrics.cleanupFailures || 0) : null;
+  const antiBotSuppression = Object.values(safeSiteHealth.sites || {}).filter((item) => Number(item.botBlockedRate || 0) > 0);
+  const replayInconsistencies = safeReplayReports.filter((report) => report?.json?.integrity && !report.json.integrity.ok);
+  const extractionQualityFailures = Object.values(safeSiteHealth.sites || {}).filter((item) => {
     return item.avgQualityScore !== null && item.avgQualityScore !== undefined && item.avgQualityScore < 0.52;
   });
 
   const summary = {
-    ipcFailures: ipcFailures.length,
-    requestFailures: requestFailures.length,
-    parserFailures: parserFailures.length,
+    ipcFailures: networkCollected ? ipcFailures.length : null,
+    requestFailures: networkCollected ? requestFailures.length : null,
+    parserFailures: articleHealthCollected ? parserFailures.length : null,
     browserCleanupFailures: cleanupFailures,
-    antiBotSuppression: antiBotSuppression.length,
-    replayInconsistencies: replayInconsistencies.length,
-    extractionQualityFailures: extractionQualityFailures.length
+    antiBotSuppression: siteHealthCollected ? antiBotSuppression.length : null,
+    replayInconsistencies: replayCollected ? replayInconsistencies.length : null,
+    extractionQualityFailures: siteHealthCollected ? extractionQualityFailures.length : null
   };
+  const collectedValues = Object.values(summary).filter((value) => value !== null);
+  const complete = collectedValues.length === Object.keys(summary).length;
+  const hasIssues = collectedValues.some((value) => value > 0);
 
   return {
     summary,
-    ok: Object.values(summary).every((value) => value === 0),
+    ok: complete && !hasIssues,
+    complete,
+    hasIssues,
     details: {
       recentRequestFailures: requestFailures.slice(-12),
       parserFailures: parserFailures.slice(0, 12).map((item) => ({
@@ -51,24 +68,25 @@ function buildRuntimeHealthReport({
         domain: item.domain,
         avgQualityScore: item.avgQualityScore
       })),
-      browserMetrics
+      browserMetrics: browserMetricsCollected ? browserMetrics : null
     }
   };
 }
 
 function renderRuntimeHealthReport(report) {
+  const status = report.hasIssues ? "Needs attention" : report.complete ? "OK" : "Incomplete";
   const lines = [
     "Runtime Health Report",
     "=====================",
-    `Status: ${report.ok ? "OK" : "Needs attention"}`,
+    `Status: ${status}`,
     "",
-    `IPC failures: ${report.summary.ipcFailures}`,
-    `Request failures: ${report.summary.requestFailures}`,
-    `Parser failures: ${report.summary.parserFailures}`,
-    `Browser cleanup failures: ${report.summary.browserCleanupFailures}`,
-    `Anti-bot suppression entries: ${report.summary.antiBotSuppression}`,
-    `Replay inconsistencies: ${report.summary.replayInconsistencies}`,
-    `Extraction quality failures: ${report.summary.extractionQualityFailures}`
+    `IPC failures: ${formatCount(report.summary.ipcFailures)}`,
+    `Request failures: ${formatCount(report.summary.requestFailures)}`,
+    `Parser failures: ${formatCount(report.summary.parserFailures)}`,
+    `Browser cleanup failures: ${formatCount(report.summary.browserCleanupFailures)}`,
+    `Anti-bot suppression entries: ${formatCount(report.summary.antiBotSuppression)}`,
+    `Replay inconsistencies: ${formatCount(report.summary.replayInconsistencies)}`,
+    `Extraction quality failures: ${formatCount(report.summary.extractionQualityFailures)}`
   ];
 
   if (report.details.recentRequestFailures.length) {
@@ -100,6 +118,10 @@ function renderRuntimeHealthReport(report) {
   }
 
   return lines.join("\n");
+}
+
+function formatCount(value) {
+  return value === null || value === undefined ? "not collected" : String(value);
 }
 
 function formatRate(value) {

@@ -1342,6 +1342,40 @@ pre {
   margin: 0;
 }
 
+.privacy-setting-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.privacy-setting-row > div {
+  display: grid;
+  gap: 4px;
+}
+
+.privacy-setting-row strong {
+  color: var(--text-strong);
+  font-size: 12px;
+}
+
+.privacy-setting-row span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.privacy-toggle {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  white-space: nowrap;
+}
+
 @media (max-width: 1120px) {
   .knowledge-view {
     padding: 20px;

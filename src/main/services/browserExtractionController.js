@@ -1,7 +1,9 @@
 const { createExtractionSession } = require("./extractionSession");
+const { formatUrlForLog } = require("./requestGovernor");
 
 const DEFAULT_TIMEOUT_MS = 18000;
 const DEFAULT_MAX_CONCURRENT = 1;
+let diagnosticRecorder = null;
 
 class BrowserExtractionController {
   constructor({
@@ -33,6 +35,7 @@ class BrowserExtractionController {
 
     return this.enqueue(async () => {
       const startedAt = Date.now();
+      const logUrl = formatUrlForLog(url);
       const extractionSession = this.createSession({ label, url });
       const win = new this.BrowserWindowImpl({
         show: false,
@@ -43,6 +46,7 @@ class BrowserExtractionController {
           session: extractionSession.session,
           contextIsolation: true,
           nodeIntegration: false,
+          sandbox: true,
           images: false,
           plugins: false,
           backgroundThrottling: false,
@@ -62,7 +66,7 @@ class BrowserExtractionController {
         logBrowserController("browser_extraction_complete", {
           traceId,
           label,
-          url,
+          url: logUrl,
           durationMs: Date.now() - startedAt,
           extractionNetwork: extractionSession.stats
         });
@@ -72,13 +76,13 @@ class BrowserExtractionController {
         logBrowserController("browser_extraction_failed", {
           traceId,
           label,
-          url,
+          url: logUrl,
           durationMs: Date.now() - startedAt,
           error: error.message
         });
         throw error;
       } finally {
-        await this.cleanupWindow(win, extractionSession, { traceId, label, url });
+        await this.cleanupWindow(win, extractionSession, { traceId, label, url: logUrl });
       }
     });
   }
@@ -114,8 +118,12 @@ class BrowserExtractionController {
       if (!win.isDestroyed()) {
         win.destroy();
       }
-    } catch {
+    } catch (error) {
       this.metrics.cleanupFailures += 1;
+      logBrowserController("browser_extraction_destroy_failed", {
+        ...context,
+        error: error.message
+      });
     }
     try {
       await extractionSession.cleanup();
@@ -160,7 +168,7 @@ function loadBestEffort(win, url, timeoutMs) {
 
     function onFailLoad(_event, code, description, failedUrl, isMainFrame) {
       if (isMainFrame) {
-        finish(reject, new Error(`${description} (${code}) loading '${failedUrl || url}'`));
+        finish(reject, new Error(`${description} (${code}) loading '${formatUrlForLog(failedUrl || url)}'`));
       }
     }
 
@@ -214,10 +222,16 @@ function logBrowserController(event, payload) {
     timestamp: Date.now(),
     payload
   }));
+  diagnosticRecorder?.(event, payload);
+}
+
+function setBrowserDiagnosticRecorder(recorder) {
+  diagnosticRecorder = typeof recorder === "function" ? recorder : null;
 }
 
 module.exports = {
   BrowserExtractionController,
   loadBestEffort,
-  isWindowUsable
+  isWindowUsable,
+  setBrowserDiagnosticRecorder
 };

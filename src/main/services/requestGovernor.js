@@ -26,6 +26,7 @@ class RequestGovernor {
   async request(url, options = {}) {
     const key = normalizeUrl(url);
     const domain = safeHost(key);
+    const logUrl = formatUrlForLog(key, options);
     const cacheKey = `${options.source || "unknown"}:${key}`;
     const traceId = options.traceId || createTraceId(options.source || "request");
 
@@ -33,7 +34,7 @@ class RequestGovernor {
     if (cached && !isExpired(cached)) {
       logRequest("request_cache_hit", {
         traceId,
-        url: key,
+        url: logUrl,
         domain,
         source: options.source,
         fetchMode: options.fetchMode || options.profile || "unknown",
@@ -48,7 +49,7 @@ class RequestGovernor {
     if (this.inflight.has(cacheKey)) {
       logRequest("request_deduped", {
         traceId,
-        url: key,
+        url: logUrl,
         domain,
         source: options.source,
         fetchMode: options.fetchMode || options.profile || "unknown"
@@ -58,7 +59,8 @@ class RequestGovernor {
 
     const promise = this._requestWithGovernance(key, domain, {
       ...options,
-      traceId
+      traceId,
+      logUrl
     })
       .then((result) => {
         this.cache.set(cacheKey, {
@@ -95,7 +97,7 @@ class RequestGovernor {
       try {
         logRequest("request_start", {
           traceId: options.traceId,
-          url,
+          url: options.logUrl || formatUrlForLog(url, options),
           domain,
           source: options.source,
           fetchMode: options.fetchMode || options.profile || "unknown",
@@ -109,7 +111,7 @@ class RequestGovernor {
         this._bumpDomain(domain);
         logRequest("request_success", {
           traceId: options.traceId,
-          url,
+          url: options.logUrl || formatUrlForLog(url, options),
           domain,
           source: options.source,
           fetchMode: options.fetchMode || options.profile || "unknown",
@@ -124,7 +126,7 @@ class RequestGovernor {
         const classification = classifyError(error);
         logRequest("request_failed", {
           traceId: options.traceId,
-          url,
+          url: options.logUrl || formatUrlForLog(url, options),
           domain,
           source: options.source,
           fetchMode: options.fetchMode || options.profile || "unknown",
@@ -204,6 +206,20 @@ function safeHost(url = "") {
   }
 }
 
+function formatUrlForLog(url, options = {}) {
+  try {
+    const parsed = new URL(url);
+    parsed.username = "";
+    parsed.password = "";
+    parsed.hash = "";
+    if (options.sensitiveUrl) return `${parsed.origin}${parsed.pathname}`;
+    if (parsed.search) parsed.search = "?[redacted]";
+    return parsed.toString();
+  } catch {
+    return options.sensitiveUrl ? "[redacted-url]" : String(url || "").slice(0, 500);
+  }
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -221,5 +237,6 @@ function logRequest(event, payload) {
 }
 
 module.exports = {
-  RequestGovernor
+  RequestGovernor,
+  formatUrlForLog
 };
