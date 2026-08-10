@@ -501,20 +501,26 @@ function renderReadingProgress(progress) {
     elements.readingProgress.textContent = "阅读进度 0%";
     if (elements.readingProgressBar) elements.readingProgressBar.style.width = "0%";
     elements.readingProgress.classList.remove("complete");
+    elements.readingProgress.removeAttribute("title");
     return;
   }
   if (progress.completed) {
     elements.readingProgress.textContent = "已完成 · 已收录";
     if (elements.readingProgressBar) elements.readingProgressBar.style.width = "100%";
     elements.readingProgress.classList.add("complete");
+    elements.readingProgress.title = "已达到有效阅读、阅读深度和文末停留要求";
     return;
   }
-  const timeRatio = progress.activeMs / Math.max(progress.targets?.activeMs || 180_000, 1);
-  const depthRatio = progress.maxScrollDepth / Math.max(progress.targets?.scrollDepth || 0.9, 0.01);
-  const completion = Math.round(Math.max(0, Math.min(1, Math.min(timeRatio, depthRatio))) * 100);
+  const completion = window.ReaderProgressTracker?.getDisplayPercent?.(progress)
+    ?? Math.round(Math.max(0, Math.min(1, Number(progress.maxScrollDepth || 0))) * 100);
   elements.readingProgress.textContent = `阅读进度 ${completion}%`;
   if (elements.readingProgressBar) elements.readingProgressBar.style.width = `${completion}%`;
   elements.readingProgress.classList.remove("complete");
+  elements.readingProgress.title = [
+    `有效阅读 ${formatReadingDuration(progress.activeMs)}`,
+    `最深阅读 ${completion}%`,
+    `文末停留 ${formatReadingDuration(progress.bottomDwellMs)}`
+  ].join(" · ");
 }
 
 async function inspectPaywall(openIfPaywalled) {
@@ -586,6 +592,7 @@ function renderReaderArticle(article) {
   if (!state.translatePinned) closeQuickTranslate();
   const hostname = new URL(article.url).hostname.replace(/^www\./, "");
   const readingMinutes = estimateReadingMinutes(article.textContent || "");
+  resetReaderScroll();
   elements.readerArticle.innerHTML = `
     <div class="article-eyebrow">今日精选 · ${escapeHtml(hostname)}</div>
     <h1>${escapeHtml(article.title)}</h1>
@@ -625,6 +632,7 @@ function renderReaderFailure(errorMessage) {
   state.lastSelectionKey = "";
   SelectionService.reset();
   if (!state.translatePinned) closeQuickTranslate();
+  resetReaderScroll();
   elements.readerArticle.innerHTML = `
     <div class="article-eyebrow">今日精选</div>
     <h1>${escapeHtml(state.currentArticle.title || "文章")}</h1>
@@ -829,6 +837,7 @@ function renderLibraryView() {
 }
 
 function renderReaderLoading() {
+  resetReaderScroll();
   elements.readerArticle.innerHTML = `
     <div class="article-skeleton">
       <div class="skeleton title"></div>
@@ -849,6 +858,7 @@ function renderEmptyLibrary(message) {
   state.readerArticle = null;
   elements.articleTitle.textContent = "随阅";
   elements.siteMeta.textContent = "添加网站或导入书签文件夹";
+  resetReaderScroll();
   elements.readerArticle.innerHTML = `
     <div class="empty-state">
       <h1>从一篇好文章开始。</h1>
@@ -1268,6 +1278,24 @@ function estimateReadingMinutes(text) {
   const cjkCharacters = (normalized.match(/[\u3400-\u9fff]/g) || []).length;
   const latinWords = normalized.replace(/[\u3400-\u9fff]/g, " ").split(/\s+/).filter(Boolean).length;
   return Math.max(1, Math.round(cjkCharacters / 420 + latinWords / 220));
+}
+
+function formatReadingDuration(milliseconds = 0) {
+  const totalSeconds = Math.max(0, Math.floor(Number(milliseconds || 0) / 1000));
+  if (totalSeconds < 60) return `${totalSeconds} 秒`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分钟`;
+}
+
+function resetReaderScroll() {
+  if (!elements.readerModeView) return;
+  if (window.ReaderProgressTracker?.resetScroll) {
+    window.ReaderProgressTracker.resetScroll();
+    return;
+  }
+  elements.readerModeView.scrollTop = 0;
+  elements.readerModeView.scrollLeft = 0;
 }
 
 function localizeReadingError(message, fallback = "暂时没有找到可阅读的文章，请添加来源或稍后重试。") {

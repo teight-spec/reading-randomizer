@@ -2,7 +2,7 @@
   const ACTIVE_TARGET_MS = 180_000;
   const SCROLL_TARGET = 0.9;
   const BOTTOM_DWELL_TARGET_MS = 5_000;
-  const IDLE_TIMEOUT_MS = 90_000;
+  const IDLE_TIMEOUT_MS = 180_000;
   const SAVE_INTERVAL_MS = 15_000;
   const TICK_INTERVAL_MS = 1_000;
 
@@ -12,7 +12,6 @@
       this.scrollElement = options.scrollElement;
       this.lastInteractionAt = Date.now();
       this.lastTickAt = Date.now();
-      this.lastSavedAt = 0;
       this.session = null;
       this.flushPromise = null;
       this.flushQueued = false;
@@ -55,11 +54,18 @@
         bottomDwellMs: 0,
         reportedActiveMs: 0,
         reportedScrollDepth: 0,
+        reportedBottomDwellMs: 0,
+        currentScrollDepth: 0,
+        lastSavedAt: Date.now(),
+        targets: {
+          activeMs: ACTIVE_TARGET_MS,
+          scrollDepth: SCROLL_TARGET,
+          bottomDwellMs: BOTTOM_DWELL_TARGET_MS
+        },
         completed: false
       };
       this.lastInteractionAt = Date.now();
       this.lastTickAt = Date.now();
-      this.lastSavedAt = 0;
       this.updateScrollDepth();
       this.renderProgress();
       clearInterval(this.interval);
@@ -71,8 +77,15 @@
       clearInterval(this.interval);
       this.interval = null;
       this.session = null;
-      if (session) await this.flushSession(session);
-      this.options?.onProgress?.(null);
+      if (!session) {
+        if (!this.session) this.options?.onProgress?.(null);
+        return null;
+      }
+      const pendingFlush = this.flushPromise;
+      if (pendingFlush) await pendingFlush.catch(() => null);
+      const result = await this.flushSession(session);
+      if (!this.session) this.options?.onProgress?.(null);
+      return result;
     }
 
     tick() {
@@ -88,11 +101,15 @@
         }
       }
       this.renderProgress();
+      const targets = this.session.targets;
       const completionCandidate =
-        this.session.activeMs >= ACTIVE_TARGET_MS &&
-        this.session.maxScrollDepth >= SCROLL_TARGET &&
-        this.session.bottomDwellMs >= BOTTOM_DWELL_TARGET_MS;
-      if (completionCandidate || now - this.lastSavedAt >= SAVE_INTERVAL_MS) this.flush();
+        Math.max(this.session.activeMs, this.session.reportedActiveMs) >= targets.activeMs &&
+        Math.max(this.session.maxScrollDepth, this.session.reportedScrollDepth) >= targets.scrollDepth &&
+        Math.max(this.session.bottomDwellMs, this.session.reportedBottomDwellMs) >= targets.bottomDwellMs;
+      if (
+        (completionCandidate && !this.session.completed) ||
+        now - this.session.lastSavedAt >= SAVE_INTERVAL_MS
+      ) this.flush();
     }
 
     recordInteraction() {
@@ -117,7 +134,9 @@
 
     updateScrollDepth() {
       if (!this.session) return;
-      this.session.maxScrollDepth = Math.max(this.session.maxScrollDepth, this.currentScrollDepth());
+      const currentDepth = this.currentScrollDepth();
+      this.session.currentScrollDepth = currentDepth;
+      this.session.maxScrollDepth = Math.max(this.session.maxScrollDepth, currentDepth);
     }
 
     async flush() {
@@ -152,7 +171,9 @@
           maxScrollDepth: session.maxScrollDepth,
           bottomDwellMs: Math.round(session.bottomDwellMs)
         });
-        this.lastSavedAt = Date.now();
+        if (this.session?.sessionId === session.sessionId) {
+          this.session.lastSavedAt = Date.now();
+        }
         if (this.session?.sessionId === session.sessionId && result?.completed) {
           const firstNotification = !this.session.completed;
           this.session.completed = true;
@@ -161,6 +182,17 @@
         if (this.session?.sessionId === session.sessionId && result) {
           this.session.reportedActiveMs = Math.max(this.session.reportedActiveMs || 0, Number(result.activeMs || 0));
           this.session.reportedScrollDepth = Math.max(this.session.reportedScrollDepth || 0, Number(result.maxScrollDepth || 0));
+          this.session.reportedBottomDwellMs = Math.max(
+            this.session.reportedBottomDwellMs || 0,
+            Number(result.bottomDwellMs || 0)
+          );
+          if (result.thresholds) {
+            this.session.targets = {
+              activeMs: Number(result.thresholds.activeMs || ACTIVE_TARGET_MS),
+              scrollDepth: Number(result.thresholds.scrollDepth || SCROLL_TARGET),
+              bottomDwellMs: Number(result.thresholds.bottomDwellMs || BOTTOM_DWELL_TARGET_MS)
+            };
+          }
           this.renderProgress();
         }
         return result;
@@ -175,12 +207,22 @@
       this.options?.onProgress?.({
         activeMs: Math.max(this.session.activeMs, this.session.reportedActiveMs || 0),
         maxScrollDepth: Math.max(this.session.maxScrollDepth, this.session.reportedScrollDepth || 0),
+        currentScrollDepth: this.session.currentScrollDepth,
+        bottomDwellMs: Math.max(this.session.bottomDwellMs, this.session.reportedBottomDwellMs || 0),
         completed: this.session.completed,
-        targets: {
-          activeMs: ACTIVE_TARGET_MS,
-          scrollDepth: SCROLL_TARGET
-        }
+        targets: this.session.targets
       });
+    }
+
+    getDisplayPercent(progress) {
+      const depth = Number(progress?.maxScrollDepth || 0);
+      return Math.round(Math.max(0, Math.min(1, depth)) * 100);
+    }
+
+    resetScroll() {
+      if (!this.scrollElement) return;
+      this.scrollElement.scrollTop = 0;
+      this.scrollElement.scrollLeft = 0;
     }
   }
 

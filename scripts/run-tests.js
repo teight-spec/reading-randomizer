@@ -394,6 +394,94 @@ test("candidate filter rejects topic hubs, games, and sponsored utility content"
   assert.equal(isSponsoredLike("Daily Crossword", "https://example.com/story"), true);
 });
 
+test("reading progress follows scroll depth and preserves a new session during an in-flight save", async () => {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM("<!doctype html><article id='reader'></article>", {
+    url: "file:///reader-test.html",
+    runScripts: "outside-only"
+  });
+  const reader = dom.window.document.querySelector("#reader");
+  let scrollTop = 0;
+  Object.defineProperties(reader, {
+    clientHeight: { configurable: true, get: () => 200 },
+    scrollHeight: { configurable: true, get: () => 1000 },
+    scrollTop: {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => { scrollTop = Number(value); }
+    }
+  });
+  Object.defineProperty(dom.window.document, "visibilityState", { configurable: true, value: "visible" });
+  dom.window.document.hasFocus = () => true;
+
+  let context = {
+    articleUrl: "https://example.com/first",
+    articleTitle: "First",
+    siteId: "site",
+    siteTitle: "Example",
+    siteDomain: "example.com"
+  };
+  let resolveFirstSave;
+  let saveCalls = 0;
+  dom.window.readerApi = {
+    saveReadingProgress: async (payload) => {
+      saveCalls += 1;
+      if (saveCalls === 1) {
+        return new Promise((resolve) => {
+          resolveFirstSave = () => resolve({
+            ...payload,
+            completed: false,
+            thresholds: { activeMs: 180_000, scrollDepth: 0.9, bottomDwellMs: 5_000 }
+          });
+        });
+      }
+      return {
+        ...payload,
+        completed: false,
+        thresholds: { activeMs: 180_000, scrollDepth: 0.9, bottomDwellMs: 5_000 }
+      };
+    }
+  };
+  const progressEvents = [];
+  const source = await fs.readFile(path.join(__dirname, "..", "src", "renderer", "readingTracker.js"), "utf8");
+  dom.window.eval(source);
+  const tracker = dom.window.ReaderProgressTracker;
+  tracker.configure({
+    scrollElement: reader,
+    getContext: () => context,
+    isReaderVisible: () => true,
+    onProgress: (progress) => progressEvents.push(progress),
+    onCompleted: () => {},
+    onError: (error) => { throw error; }
+  });
+
+  tracker.start();
+  clearInterval(tracker.interval);
+  assert.equal(tracker.getDisplayPercent(progressEvents.at(-1)), 20);
+  scrollTop = 700;
+  tracker.updateScrollDepth();
+  tracker.renderProgress();
+  assert.equal(tracker.getDisplayPercent(progressEvents.at(-1)), 90);
+  tracker.resetScroll();
+  assert.equal(scrollTop, 0);
+  assert.equal(tracker.isActivelyReading(Date.now() + 179_000), true);
+  assert.equal(tracker.isActivelyReading(Date.now() + 181_000), false);
+
+  const pendingSave = tracker.flush();
+  context = { ...context, articleUrl: "https://example.com/second", articleTitle: "Second" };
+  scrollTop = 0;
+  tracker.start();
+  clearInterval(tracker.interval);
+  const newSessionId = tracker.session.sessionId;
+  resolveFirstSave();
+  await pendingSave;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(tracker.session.sessionId, newSessionId);
+  assert.equal(progressEvents.at(-1) === null, false, "old stop must not clear the new article progress");
+  await tracker.stop();
+  dom.window.close();
+});
+
 test("reader fixtures keep long-form and archive extraction complete", async () => {
   const { _extractFromHtml } = require("../src/main/services/readerMode");
   const { evaluateExtractionQuality } = require("../src/main/services/extractionQualityEvaluator");
