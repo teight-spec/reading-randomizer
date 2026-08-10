@@ -1,117 +1,231 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; connect-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'self'">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Reading Randomizer</title>
+  <title>随阅</title>
   <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./refined.css">
 </head>
 <body>
   <main class="reader-app">
-    <header class="topbar">
-      <div class="article-chip">
-        <strong id="articleTitle">Reading Randomizer</strong>
-        <span id="siteMeta">Preparing article...</span>
+    <aside class="source-sidebar">
+      <div class="sidebar-brand">
+        <strong>随阅</strong>
+        <span>慢下来，读一篇</span>
       </div>
-      <nav class="toolbar">
-        <input id="searchInput" class="top-search" placeholder="Search library">
-        <button id="nextButton">Next</button>
-        <button id="markReadButton" class="ghost">Read</button>
-        <button id="originalButton" class="ghost">Open Article</button>
-        <button id="archiveButton" class="ghost">Bypass</button>
-        <button id="translatePanelButton" class="ghost">Translate</button>
-        <button id="settingsPanelButton" class="ghost">Mirrors</button>
-      </nav>
-    </header>
 
-    <section class="content-shell">
-      <aside class="source-sidebar">
-        <div class="sidebar-head">
-          <div>
-            <strong>Library</strong>
-            <span>Reading sources</span>
+      <nav class="sidebar-nav" aria-label="主导航">
+        <button id="todayButton" class="sidebar-nav-item active" type="button">
+          <span>今日一篇</span>
+        </button>
+        <button id="libraryButton" class="sidebar-nav-item" type="button">
+          <span>资料库</span>
+        </button>
+        <button id="knowledgeButton" class="sidebar-nav-item" type="button">
+          <span>知识库</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-spacer" aria-hidden="true"></div>
+
+      <button id="sourceManagerButton" class="source-manager-button" type="button">
+        <span>设置</span>
+      </button>
+    </aside>
+
+    <section class="main-workspace">
+      <header class="topbar">
+        <div class="reading-status-block">
+          <div class="reading-status-line">
+            <span>第 218 期</span>
+            <span aria-hidden="true">·</span>
+            <span id="readingProgress" class="reading-progress">阅读进度 0%</span>
+          </div>
+          <div class="reading-progress-track" aria-hidden="true"><span id="readingProgressBar"></span></div>
+          <div class="article-chip visually-hidden" aria-live="polite">
+            <strong id="articleTitle">随阅</strong>
+            <span id="siteMeta">正在准备文章…</span>
           </div>
         </div>
-        <section class="library-actions">
-          <button id="importChromeButton" class="import-button">Import Bookmark Folders</button>
-          <div class="import-note">One-time import from Chrome folders: English, fashion, literary award.</div>
-        </section>
-        <details class="add-source-box" open>
-          <summary>Add One Website</summary>
-          <form id="addSiteForm" class="stack-form">
-            <input id="siteFolderInput" placeholder="Collection, e.g. English">
-            <input id="siteTitleInput" placeholder="Source name">
-            <input id="siteUrlInput" placeholder="https://example.com">
-            <input id="siteFeedInput" placeholder="RSS / Atom URL (optional)">
-            <button type="submit">Add Website</button>
-          </form>
-        </details>
-        <section class="maintenance-box">
-          <div>
-            <strong>Browser Cache</strong>
-            <span id="cacheUsage">Checking...</span>
-          </div>
-          <button id="clearCacheButton" class="ghost">Clear</button>
-        </section>
-        <div id="siteTree" class="source-tree"></div>
-      </aside>
+        <nav class="toolbar" aria-label="文章操作">
+          <button id="originalButton" class="ghost">原文</button>
+          <button id="archiveButton" class="ghost">镜像</button>
+        </nav>
+      </header>
 
-      <section class="reading-stage">
+      <section class="content-shell">
+        <section class="reading-stage">
         <article id="readerModeView" class="reader-mode">
-          <div class="reader-controls">
-            <button id="fontMinusButton" class="ghost">A-</button>
-            <button id="fontPlusButton" class="ghost">A+</button>
-            <button id="widthMinusButton" class="ghost">Narrow</button>
-            <button id="widthPlusButton" class="ghost">Wide</button>
-          </div>
           <div id="readerArticle" class="reader-article"></div>
+          <div class="reader-controls" aria-label="阅读设置">
+            <span class="reader-control-label">字号</span>
+            <button id="fontMinusButton" class="ghost" aria-label="减小字号">小</button>
+            <button id="fontPlusButton" class="ghost" aria-label="增大字号">大</button>
+            <span class="reader-control-divider" aria-hidden="true"></span>
+            <span class="reader-control-label">版心</span>
+            <button id="widthMinusButton" class="ghost">窄版</button>
+            <button id="widthPlusButton" class="ghost">宽版</button>
+          </div>
+          <button id="nextButton" class="reader-next-float" type="button">下一篇</button>
         </article>
+
+        <section id="libraryView" class="library-view hidden">
+          <header class="library-header">
+            <div>
+              <span class="eyebrow">阅读来源</span>
+              <h1>资料库</h1>
+              <p id="libraryStats">正在整理你的阅读来源…</p>
+            </div>
+            <div class="library-header-actions">
+              <button id="libraryManageButton" class="ghost" type="button">添加 / 管理来源</button>
+              <button id="closeLibraryButton" class="ghost" type="button">返回阅读</button>
+            </div>
+          </header>
+
+          <div class="library-search-row">
+            <label for="searchInput">查找来源</label>
+            <input id="searchInput" placeholder="搜索名称、网址或分类" aria-label="搜索来源">
+          </div>
+
+          <div class="library-layout">
+            <nav id="libraryCategories" class="library-categories" aria-label="来源分类"></nav>
+            <section class="library-source-panel">
+              <header class="library-source-heading">
+                <strong id="librarySectionTitle">全部来源</strong>
+                <span>选择一个来源，随阅会从中为你挑选文章</span>
+              </header>
+              <div id="siteTree" class="library-source-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="knowledgeView" class="knowledge-view hidden">
+          <header class="knowledge-header">
+            <div>
+              <span class="eyebrow">个人阅读知识库</span>
+              <h1>阅读知识库</h1>
+              <p id="knowledgeStats">还没有已完成的文章。</p>
+            </div>
+            <button id="closeKnowledgeButton" class="ghost">返回阅读</button>
+          </header>
+          <div class="knowledge-filters">
+            <input id="knowledgeSearchInput" placeholder="搜索标题、摘要、标签和文章内容">
+            <select id="knowledgeCategoryFilter" aria-label="按分类筛选">
+              <option value="">全部分类</option>
+            </select>
+            <select id="knowledgeStatusFilter" aria-label="按分析状态筛选">
+              <option value="">全部状态</option>
+              <option value="analyzed">已分析</option>
+              <option value="pending_analysis">等待 AI 分析</option>
+              <option value="analysis_failed">分析失败</option>
+              <option value="content_missing">正文缺失</option>
+            </select>
+          </div>
+          <div class="knowledge-layout">
+            <div id="knowledgeList" class="knowledge-list"></div>
+            <article id="knowledgeDetail" class="knowledge-detail">
+              <div class="knowledge-empty">
+                <strong>完成的阅读会出现在这里。</strong>
+                <span>在阅读模式中有效阅读三分钟，并读到文章末尾即可收录。</span>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <aside id="quickTranslate" class="quick-translate hidden">
+          <div id="quickTranslateHandle" class="quick-translate-head">
+            <strong>划词翻译</strong>
+            <div class="quick-actions">
+              <button id="pinTranslateButton" class="ghost">固定</button>
+              <button id="closeQuickTranslateButton" class="ghost">关闭</button>
+            </div>
+          </div>
+          <div class="quick-section-label">选中文本</div>
+          <div id="quickTranslateSource" class="quick-source"></div>
+          <div class="quick-section-label">翻译结果</div>
+          <div id="quickTranslateResult" class="quick-result">正在翻译…</div>
+        </aside>
+        </section>
       </section>
     </section>
 
-    <div id="status" class="status">Ready</div>
-
-    <aside id="quickTranslate" class="quick-translate hidden">
-      <div id="quickTranslateHandle" class="quick-translate-head">
-        <strong>Translate</strong>
-        <div class="quick-actions">
-          <button id="pinTranslateButton" class="ghost">Pin</button>
-          <button id="closeQuickTranslateButton" class="ghost">Close</button>
-        </div>
-      </div>
-      <div id="quickTranslateSource" class="quick-source"></div>
-      <div id="quickTranslateResult" class="quick-result">Translating...</div>
-    </aside>
+    <div id="status" class="status">就绪</div>
 
     <aside id="drawer" class="drawer hidden">
       <div class="drawer-head">
-        <strong id="drawerTitle">Panel</strong>
-        <button id="closeDrawerButton" class="ghost">Close</button>
+        <strong id="drawerTitle">面板</strong>
+        <button id="closeDrawerButton" class="ghost">关闭</button>
       </div>
 
-      <section id="translatePanel" class="drawer-panel hidden">
-        <textarea id="translationInput" placeholder="Paste selected text, long sentence, or paragraph here."></textarea>
-        <div class="button-row">
-          <button id="translateAutoButton">Translate</button>
-          <button id="translateZhButton" class="ghost">To Chinese</button>
-          <button id="translateEnButton" class="ghost">To English</button>
+      <section id="sourcePanel" class="drawer-panel hidden">
+        <section class="management-section">
+          <div class="management-heading">
+            <strong>导入书签</strong>
+            <span>从 Chrome 的 English、fashion、literary award 文件夹中一次性导入。</span>
+          </div>
+          <button id="importChromeButton" class="import-button">导入书签文件夹</button>
+        </section>
+
+        <section class="management-section">
+          <div class="management-heading">
+            <strong>添加网站</strong>
+            <span>为资料库添加一个新的阅读来源。</span>
+          </div>
+          <form id="addSiteForm" class="stack-form">
+            <input id="siteFolderInput" placeholder="分类，例如：英文阅读">
+            <input id="siteTitleInput" placeholder="来源名称">
+            <input id="siteUrlInput" placeholder="https://example.com">
+            <input id="siteFeedInput" placeholder="RSS / Atom 地址（可选）">
+            <button type="submit">添加网站</button>
+          </form>
+        </section>
+
+        <section class="management-section maintenance-box">
+          <div>
+            <strong>浏览器缓存</strong>
+            <span id="cacheUsage">正在检查…</span>
+          </div>
+          <button id="clearCacheButton" class="ghost">清理</button>
+        </section>
+
+        <div class="management-links">
+          <button id="settingsPanelButton" class="ghost">镜像设置</button>
+          <button id="aiSettingsButton" class="ghost">AI 分析设置</button>
         </div>
-        <pre id="translationOutput"></pre>
       </section>
 
       <section id="bypassPanel" class="drawer-panel hidden">
         <form id="addBypassForm" class="stack-form">
-          <input id="bypassNameInput" placeholder="Source name">
+          <input id="bypassNameInput" placeholder="镜像名称">
           <input id="bypassTemplateInput" placeholder="https://archive.example/{url}">
-          <button type="submit">Add bypass source</button>
+          <button type="submit">添加镜像来源</button>
         </form>
         <div id="bypassList" class="list"></div>
+      </section>
+
+      <section id="aiSettingsPanel" class="drawer-panel hidden">
+        <div class="settings-note">
+          <strong>知识库分析</strong>
+          <span id="aiSettingsStatus">正在检查安全存储…</span>
+        </div>
+        <form id="groqSettingsForm" class="stack-form">
+          <label for="groqApiKeyInput">Groq API 密钥</label>
+          <input id="groqApiKeyInput" type="password" autocomplete="off" placeholder="gsk_...">
+          <div class="button-row">
+            <button type="submit">安全保存</button>
+            <button id="clearGroqApiKeyButton" type="button" class="ghost">清除</button>
+          </div>
+        </form>
+        <p class="settings-help">密钥会使用操作系统凭据存储进行加密，并且不会回显在此页面。</p>
       </section>
     </aside>
   </main>
 
   <script src="./runtimeReporter.js"></script>
+  <script src="./readingTracker.js"></script>
+  <script src="./knowledgeUi.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

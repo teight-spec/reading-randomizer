@@ -1,5 +1,5 @@
 const path = require("node:path");
-const { app, BrowserWindow, ipcMain, session, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, safeStorage, session, shell } = require("electron");
 const { HistoryStore } = require("./services/historyStore");
 const { inspectArticle } = require("./services/articlePicker");
 const { Translator } = require("./services/translator");
@@ -13,6 +13,10 @@ const { TranslationStore } = require("./services/translationStore");
 const { installNetworkDiagnostics, attachWindowDiagnostics } = require("./services/networkDiagnostics");
 const { SiteHealthStore } = require("./services/siteHealthStore");
 const { clearBrowserCaches, getCacheUsage } = require("./services/maintenance");
+const { KnowledgeDatabase } = require("./services/knowledgeDatabase");
+const { SecureSettingsStore } = require("./services/secureSettingsStore");
+const { GroqAnalyzer } = require("./services/groqAnalyzer");
+const { KnowledgeAnalysisQueue } = require("./services/knowledgeAnalysisQueue");
 
 let mainWindow;
 let historyStore;
@@ -24,6 +28,9 @@ let articleCache;
 let translationStore;
 let networkDiagnostics;
 let siteHealthStore;
+let knowledgeDatabase;
+let secureSettingsStore;
+let knowledgeAnalysisQueue;
 
 app.commandLine.appendSwitch("disable-background-networking");
 app.commandLine.appendSwitch("disable-component-update");
@@ -71,6 +78,13 @@ app.whenReady().then(() => {
   articleCache = new ArticleCache(app.getPath("userData"));
   translationStore = new TranslationStore(app.getPath("userData"));
   siteHealthStore = new SiteHealthStore(app.getPath("userData"));
+  knowledgeDatabase = new KnowledgeDatabase(app.getPath("userData"));
+  secureSettingsStore = new SecureSettingsStore(app.getPath("userData"), { safeStorage });
+  knowledgeAnalysisQueue = new KnowledgeAnalysisQueue({
+    database: knowledgeDatabase,
+    settingsStore: secureSettingsStore,
+    analyzer: new GroqAnalyzer({ settingsStore: secureSettingsStore })
+  });
   translator = new Translator({ translationStore });
   articlePrefetcher = new ArticlePrefetcher({
     siteStore,
@@ -87,6 +101,7 @@ app.whenReady().then(() => {
   });
   registerIpcHandlers();
   articlePrefetcher.start();
+  knowledgeAnalysisQueue.start();
   createWindow();
 
   app.on("activate", () => {
@@ -102,6 +117,11 @@ app.on("window-all-closed", () => {
   }
 });
 
+app.on("before-quit", () => {
+  knowledgeAnalysisQueue?.stop();
+  knowledgeDatabase?.close();
+});
+
 function registerIpcHandlers() {
   handleIpc("reading:next", async () => {
     return articlePrefetcher.consume();
@@ -112,12 +132,51 @@ function registerIpcHandlers() {
     return articlePrefetcher.prepareForSite(site);
   });
 
-  handleIpc("reading:markRead", async (_event, payload) => {
-    return historyStore.markRead(payload.site, payload.article);
-  });
-
   handleIpc("reading:history", async () => {
     return historyStore.load();
+  });
+
+  handleIpc("reading:progress", async (_event, payload) => {
+    const cachedItem = await articleCache.getArticle(payload?.articleUrl);
+    const result = knowledgeDatabase.recordProgress(payload, cachedItem);
+    if (result.newlyCompleted || result.analysisQueued) knowledgeAnalysisQueue.wake();
+    return result;
+  });
+
+  handleIpc("knowledge:list", async (_event, filters) => {
+    return knowledgeDatabase.listArticles(filters || {});
+  });
+
+  handleIpc("knowledge:get", async (_event, articleId) => {
+    return knowledgeDatabase.getArticle(Number(articleId));
+  });
+
+  handleIpc("knowledge:categories", async () => {
+    return knowledgeDatabase.listCategories();
+  });
+
+  handleIpc("knowledge:stats", async () => {
+    return knowledgeDatabase.getStats();
+  });
+
+  handleIpc("knowledge:update", async (_event, articleId, patch) => {
+    return knowledgeDatabase.updateMetadata(Number(articleId), patch || {});
+  });
+
+  handleIpc("knowledge:retry", async (_event, articleId) => {
+    const result = knowledgeDatabase.retryArticle(Number(articleId));
+    knowledgeAnalysisQueue.wake();
+    return result;
+  });
+
+  handleIpc("knowledge:settings", async () => {
+    return secureSettingsStore.getPublicSettings();
+  });
+
+  handleIpc("knowledge:saveApiKey", async (_event, apiKey) => {
+    const settings = await secureSettingsStore.saveGroqApiKey(apiKey);
+    knowledgeAnalysisQueue.wake();
+    return settings;
   });
 
   handleIpc("article:inspect", async (_event, url) => {

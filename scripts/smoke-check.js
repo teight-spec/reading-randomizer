@@ -45,6 +45,10 @@ const required = [
   "src/main/services/requestGovernor.js",
   "src/main/services/runtimeHealthReport.js",
   "src/main/services/maintenance.js",
+  "src/main/services/knowledgeDatabase.js",
+  "src/main/services/secureSettingsStore.js",
+  "src/main/services/groqAnalyzer.js",
+  "src/main/services/knowledgeAnalysisQueue.js",
   "src/main/services/readerMode.js",
   "src/main/services/networkDiagnostics.js",
   "src/main/services/extractionSession.js",
@@ -64,8 +68,11 @@ const required = [
   "src/preload/preload.js",
   "src/renderer/index.html",
   "src/renderer/app.js",
+  "src/renderer/readingTracker.js",
+  "src/renderer/knowledgeUi.js",
   "src/renderer/runtimeReporter.js",
-  "src/renderer/styles.css"
+  "src/renderer/styles.css",
+  "src/renderer/refined.css"
 ];
 
 let ok = true;

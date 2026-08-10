@@ -123,6 +123,162 @@ test("writeJsonAtomic writes valid JSON without leaving partial target content",
   assert.deepEqual(parsed, { ok: true, count: 1 });
 });
 
+test("KnowledgeDatabase starts empty and completes reading only after cumulative thresholds", async () => {
+  const { KnowledgeDatabase } = require("../src/main/services/knowledgeDatabase");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reader-knowledge-"));
+  await fs.writeFile(path.join(dir, "reading-history.json"), JSON.stringify({
+    openedArticles: [{ articleUrl: "https://old.example/opened" }],
+    readArticles: [{ articleUrl: "https://old.example/read" }]
+  }), "utf8");
+  const database = new KnowledgeDatabase(dir);
+  assert.deepEqual(database.getStats(), { total: 0, analyzed: 0, pending: 0 });
+
+  const cachedItem = {
+    site: { id: "site-1", title: "Example", domain: "example.com" },
+    article: { title: "A Knowledge Article", url: "https://example.com/story?utm_source=test" },
+    readerArticle: {
+      title: "A Knowledge Article",
+      byline: "Reporter",
+      excerpt: "An article about a useful idea.",
+      content: "<p>Useful article content.</p>",
+      textContent: "Useful article content about a durable idea. ".repeat(100),
+      publishedAt: "2026-08-01T00:00:00.000Z"
+    }
+  };
+  const base = {
+    articleUrl: cachedItem.article.url,
+    articleTitle: cachedItem.article.title,
+    siteId: cachedItem.site.id,
+    siteTitle: cachedItem.site.title,
+    siteDomain: cachedItem.site.domain,
+    startedAt: "2026-08-08T00:00:00.000Z",
+    maxScrollDepth: 0.95,
+    bottomDwellMs: 5000
+  };
+  const first = database.recordProgress({ ...base, sessionId: "session-1", activeMs: 120_000 }, cachedItem);
+  assert.equal(first.completed, false);
+  const duplicate = database.recordProgress({ ...base, sessionId: "session-1", activeMs: 120_000 }, cachedItem);
+  assert.equal(duplicate.activeMs, 120_000, "replayed session progress must be idempotent");
+  const completed = database.recordProgress({
+    ...base,
+    sessionId: "session-2",
+    activeMs: 60_000,
+    maxScrollDepth: 0.5,
+    bottomDwellMs: 0
+  }, cachedItem);
+  assert.equal(completed.completed, true);
+  assert.equal(completed.newlyCompleted, true);
+  assert.equal(database.getStats().total, 1);
+  assert.equal(database.listArticles({})[0].originalUrl, cachedItem.article.url);
+  assert.equal(database.listArticles({})[0].knowledgeStatus, "pending_analysis");
+
+  const job = database.claimNextJob();
+  assert.equal(job.article_id, completed.articleId);
+  database.completeAnalysis(job.id, {
+    thesis: "这是一篇关于持久知识的文章。",
+    keyPoints: ["要点一", "要点二", "要点三"],
+    evidence: ["作者提供了一个具体例子。"],
+    whyItMatters: "它帮助读者建立长期知识。",
+    entities: ["知识库"],
+    categorySlug: "technology-ai",
+    categoryConfidence: 0.9,
+    tags: ["知识管理", "阅读"],
+    tagConfidence: 0.8
+  }, { model: "test-model", promptVersion: "test-v1", sourceHash: "hash" });
+  const analyzed = database.getArticle(completed.articleId);
+  assert.equal(analyzed.knowledgeStatus, "analyzed");
+  assert.equal(analyzed.categorySlug, "technology-ai");
+  assert.deepEqual(analyzed.tags.sort(), ["知识管理", "阅读"].sort());
+  assert.equal(database.listArticles({ query: "持久知识" }).length, 1);
+  assert.equal(database.listArticles({ query: "要点二" }).length, 1);
+  assert.equal(database.listArticles({ category: "technology-ai" }).length, 1);
+
+  const missingUrl = "https://example.com/temporarily-missing";
+  const missing = database.recordProgress({
+    ...base,
+    sessionId: "session-missing",
+    articleUrl: missingUrl,
+    activeMs: 180_000
+  }, null);
+  assert.equal(database.getArticle(missing.articleId).knowledgeStatus, "content_missing");
+  const restored = database.recordProgress({
+    ...base,
+    sessionId: "session-missing",
+    articleUrl: missingUrl,
+    activeMs: 180_000
+  }, {
+    ...cachedItem,
+    article: { ...cachedItem.article, url: missingUrl }
+  });
+  assert.equal(restored.analysisQueued, true);
+  assert.equal(database.getArticle(missing.articleId).knowledgeStatus, "pending_analysis");
+  database.close();
+});
+
+test("SecureSettingsStore encrypts Groq credentials at rest", async () => {
+  const { SecureSettingsStore } = require("../src/main/services/secureSettingsStore");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reader-secure-settings-"));
+  const fakeSafeStorage = {
+    isEncryptionAvailable: () => true,
+    encryptString: (value) => Buffer.from(`encrypted:${value}`, "utf8"),
+    decryptString: (buffer) => buffer.toString("utf8").replace(/^encrypted:/, "")
+  };
+  const store = new SecureSettingsStore(dir, { safeStorage: fakeSafeStorage });
+  const key = "test-groq-key-with-enough-length";
+  await store.saveGroqApiKey(key);
+  const raw = await fs.readFile(store.filePath, "utf8");
+  assert.equal(raw.includes(key), false);
+  assert.equal((await fs.stat(store.filePath)).mode & 0o777, 0o600);
+  assert.equal(await store.getGroqApiKey(), key);
+  assert.equal((await store.getPublicSettings()).configured, true);
+});
+
+test("GroqAnalyzer requests deterministic JSON and normalizes Chinese knowledge output", async () => {
+  const { GroqAnalyzer, sampleArticleText } = require("../src/main/services/groqAnalyzer");
+  let requestOptions = null;
+  const analyzer = new GroqAnalyzer({
+    settingsStore: {
+      getGroqApiKey: async () => "test-groq-key-with-enough-length",
+      getModel: async () => "qwen/qwen3.6-27b"
+    },
+    request: async (_url, options) => {
+      requestOptions = options;
+      return {
+        ok: true,
+        status: 200,
+        headers: {},
+        text: JSON.stringify({
+          choices: [{ message: { content: JSON.stringify({
+            thesis: "文章讨论个人知识管理。",
+            keyPoints: ["保存原文", "生成摘要", "允许人工修订"],
+            evidence: ["系统使用结构化字段。"],
+            whyItMatters: "知识可以长期检索。",
+            categorySlug: "technology-ai",
+            categoryConfidence: 0.9,
+            tags: ["知识管理", "AI"],
+            tagConfidence: 0.8,
+            entities: ["SQLite"]
+          }) } }]
+        })
+      };
+    }
+  });
+  const result = await analyzer.analyze({
+    title: "Knowledge",
+    site_title: "Example",
+    published_at: null,
+    content_text: "Article body. ".repeat(500),
+    content_hash: "source-hash"
+  });
+  const body = JSON.parse(requestOptions.body);
+  assert.equal(body.response_format.type, "json_object");
+  assert.equal(body.reasoning_effort, "none");
+  assert.equal(requestOptions.headers.Authorization.startsWith("Bearer "), true);
+  assert.equal(result.analysis.categorySlug, "technology-ai");
+  assert.deepEqual(result.analysis.tags, ["知识管理", "AI"]);
+  assert.equal(sampleArticleText("x".repeat(30_000), 1000).truncated, true);
+});
+
 test("extraction quality evaluator distinguishes article-like text from boilerplate", () => {
   const { evaluateExtractionQuality } = require("../src/main/services/extractionQualityEvaluator");
   const good = evaluateExtractionQuality({

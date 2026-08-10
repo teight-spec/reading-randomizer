@@ -5,7 +5,9 @@ const state = {
   bypassUrls: [],
   readerArticle: null,
   readerFontSize: 20,
-  readerWidth: 780,
+  readerWidth: 720,
+  libraryTree: [],
+  selectedLibraryFolder: "",
   showingOriginal: false,
   translatePinned: false,
   translateRequestId: 0,
@@ -25,8 +27,7 @@ const state = {
   },
   selectionTimer: null,
   toastTimer: null,
-  eventsBound: false,
-  drag: null
+  eventsBound: false
 };
 
 const elements = {
@@ -36,22 +37,31 @@ const elements = {
   readerModeView: document.querySelector("#readerModeView"),
   readerArticle: document.querySelector("#readerArticle"),
   nextButton: document.querySelector("#nextButton"),
+  todayButton: document.querySelector("#todayButton"),
+  libraryButton: document.querySelector("#libraryButton"),
+  libraryView: document.querySelector("#libraryView"),
+  libraryStats: document.querySelector("#libraryStats"),
+  libraryCategories: document.querySelector("#libraryCategories"),
+  librarySectionTitle: document.querySelector("#librarySectionTitle"),
+  libraryManageButton: document.querySelector("#libraryManageButton"),
+  closeLibraryButton: document.querySelector("#closeLibraryButton"),
   searchInput: document.querySelector("#searchInput"),
-  markReadButton: document.querySelector("#markReadButton"),
+  knowledgeButton: document.querySelector("#knowledgeButton"),
+  sourceManagerButton: document.querySelector("#sourceManagerButton"),
   originalButton: document.querySelector("#originalButton"),
   archiveButton: document.querySelector("#archiveButton"),
-  translatePanelButton: document.querySelector("#translatePanelButton"),
   settingsPanelButton: document.querySelector("#settingsPanelButton"),
+  aiSettingsButton: document.querySelector("#aiSettingsButton"),
   drawer: document.querySelector("#drawer"),
   drawerTitle: document.querySelector("#drawerTitle"),
   closeDrawerButton: document.querySelector("#closeDrawerButton"),
-  translatePanel: document.querySelector("#translatePanel"),
   bypassPanel: document.querySelector("#bypassPanel"),
-  translationInput: document.querySelector("#translationInput"),
-  translationOutput: document.querySelector("#translationOutput"),
-  translateAutoButton: document.querySelector("#translateAutoButton"),
-  translateZhButton: document.querySelector("#translateZhButton"),
-  translateEnButton: document.querySelector("#translateEnButton"),
+  sourcePanel: document.querySelector("#sourcePanel"),
+  aiSettingsPanel: document.querySelector("#aiSettingsPanel"),
+  aiSettingsStatus: document.querySelector("#aiSettingsStatus"),
+  groqSettingsForm: document.querySelector("#groqSettingsForm"),
+  groqApiKeyInput: document.querySelector("#groqApiKeyInput"),
+  clearGroqApiKeyButton: document.querySelector("#clearGroqApiKeyButton"),
   addSiteForm: document.querySelector("#addSiteForm"),
   siteFolderInput: document.querySelector("#siteFolderInput"),
   siteTitleInput: document.querySelector("#siteTitleInput"),
@@ -74,7 +84,9 @@ const elements = {
   fontMinusButton: document.querySelector("#fontMinusButton"),
   fontPlusButton: document.querySelector("#fontPlusButton"),
   widthMinusButton: document.querySelector("#widthMinusButton"),
-  widthPlusButton: document.querySelector("#widthPlusButton")
+  widthPlusButton: document.querySelector("#widthPlusButton"),
+  readingProgress: document.querySelector("#readingProgress"),
+  readingProgressBar: document.querySelector("#readingProgressBar")
 };
 
 const TRANSLATION_STATES = {
@@ -181,7 +193,7 @@ const TranslationService = {
   async translate({ text = "", direction = "auto", cacheKey = "", source = "manual" } = {}) {
     const snapshot = SelectionService.getTextSnapshot(text, direction);
     if (!snapshot?.text || snapshot.text.length < 2) {
-      const message = "No selected text available.";
+      const message = "请先选择需要翻译的文本。";
       setTranslationState(TRANSLATION_STATES.FAILED, {
         event: "empty_selection",
         source,
@@ -214,7 +226,7 @@ const TranslationService = {
 
     const bridge = this.getBridge();
     if (!bridge) {
-      const message = "Translation bridge is unavailable. Please reload the app.";
+      const message = "翻译服务暂不可用，请重新打开应用。";
       setTranslationState(TRANSLATION_STATES.FAILED, {
         event: "ipc_missing",
         source,
@@ -263,7 +275,7 @@ const TranslationService = {
             textLength: snapshot.text.length,
             error: result.error || result.translatedText
           });
-          showToast(rateLimited ? "Translation rate limited. Please wait and retry." : "Translation failed. Please retry.");
+          showToast(rateLimited ? "翻译请求过于频繁，请稍后重试。" : "翻译失败，请重试。");
           return result;
         }
 
@@ -288,9 +300,9 @@ const TranslationService = {
       event: rateLimited ? "rate_limited" : "translate_request_failed",
       source,
       textLength: snapshot.text.length,
-      error: lastError?.message || "unknown translation error"
+      error: lastError?.message || "未知翻译错误"
     });
-    showToast(rateLimited ? "Translation rate limited. Please wait and retry." : "Translation failed. Please retry.");
+    showToast(rateLimited ? "翻译请求过于频繁，请稍后重试。" : "翻译失败，请重试。");
     throw lastError;
   },
 
@@ -308,14 +320,34 @@ const TranslationService = {
 window.readerRuntimeReporter?.install?.(getRuntimeContext);
 boot().catch((error) => {
   reportRuntimeError("boot_failed", error);
-  setStatus(`Startup failed: ${error.message}`);
+  setStatus(`启动失败：${error.message}`);
 });
 
 async function boot() {
+  window.ReaderProgressTracker?.configure({
+    scrollElement: elements.readerModeView,
+    getContext: getReadingTrackerContext,
+    isReaderVisible: () => !elements.readerModeView.classList.contains("hidden") && !isLibraryOpen() && !window.KnowledgeUI?.isOpen?.(),
+    onProgress: renderReadingProgress,
+    onCompleted: () => showToast("文章已读完，并已收录到知识库。AI 分析正在排队。"),
+    onError: (error) => reportRuntimeError("reading_progress_failed", error)
+  });
+  window.KnowledgeUI?.configure({
+    onOpen: () => {
+      elements.todayButton?.classList.remove("active");
+      elements.libraryButton?.classList.remove("active");
+      window.ReaderProgressTracker?.flush();
+    },
+    onClose: () => {
+      window.ReaderProgressTracker?.recordInteraction();
+    },
+    setStatus: showToast
+  });
   bindEvents();
   await refreshSites();
   await refreshCacheUsage();
   await refreshBypassSources();
+  await refreshAiSettings();
   await loadNextReading();
 }
 
@@ -326,12 +358,9 @@ function bindEvents() {
   document.addEventListener("click", handleDocumentClick);
   document.addEventListener("submit", handleDocumentSubmit);
   document.addEventListener("selectionchange", handleSelectionChange);
-  document.addEventListener("mousedown", handleDocumentMouseDown);
   document.addEventListener("keyup", handleReaderSelectionEvent);
   document.addEventListener("pointerup", handleReaderSelectionEvent);
-  elements.searchInput.addEventListener("input", refreshSites);
-  window.addEventListener("mousemove", moveTranslateDrag);
-  window.addEventListener("mouseup", stopTranslateDrag);
+  elements.searchInput.addEventListener("input", renderLibraryView);
 }
 
 function handleDocumentClick(event) {
@@ -343,17 +372,20 @@ function handleDocumentClick(event) {
   }
 
   if (button === elements.nextButton) runAction("reading:next", loadNextReading);
-  if (button === elements.markReadButton) runAction("reading:markRead", markCurrentRead);
+  if (button === elements.todayButton) showReader();
+  if (button === elements.libraryButton) runAction("library:open", openLibraryView);
+  if (button === elements.closeLibraryButton) showReader();
+  if (button === elements.libraryManageButton) openDrawer("sources");
+  if (button === elements.knowledgeButton) runAction("knowledge:toggle", toggleKnowledgeView);
+  if (button === elements.sourceManagerButton) openDrawer("sources");
   if (button === elements.originalButton) runAction("article:openOriginal", openOriginal);
   if (button === elements.archiveButton) runAction("article:openArchive", openNextBypass);
-  if (button === elements.translatePanelButton) openDrawer("translate");
   if (button === elements.settingsPanelButton) openDrawer("bypass");
+  if (button === elements.aiSettingsButton) openDrawer("ai");
   if (button === elements.closeDrawerButton) closeDrawer();
-  if (button === elements.translateAutoButton) runAction("translation:auto", () => translate("auto"));
-  if (button === elements.translateZhButton) runAction("translation:zh", () => translate("zh"));
-  if (button === elements.translateEnButton) runAction("translation:en", () => translate("en"));
   if (button === elements.importChromeButton) runAction("sites:importChrome", importChromeSites);
   if (button === elements.clearCacheButton) runAction("maintenance:clearCache", clearBrowserCache);
+  if (button === elements.clearGroqApiKeyButton) runAction("knowledge:clearApiKey", clearGroqApiKey);
   if (button === elements.fontMinusButton) adjustReaderFont(-1);
   if (button === elements.fontPlusButton) adjustReaderFont(1);
   if (button === elements.widthMinusButton) adjustReaderWidth(-80);
@@ -361,6 +393,10 @@ function handleDocumentClick(event) {
   if (button === elements.closeQuickTranslateButton) closeQuickTranslate();
   if (button === elements.pinTranslateButton) toggleTranslatePin();
 
+  if (button.dataset.libraryFolder !== undefined) {
+    state.selectedLibraryFolder = button.dataset.libraryFolder;
+    renderLibraryView();
+  }
   if (button.dataset.siteAction) runAction(`site:${button.dataset.siteAction}`, () => handleSiteAction(button));
   if (button.dataset.sourceAction) runAction(`source:${button.dataset.sourceAction}`, () => handleSourceAction(button));
   if (button.dataset.bypassAction) runAction(`bypass:${button.dataset.bypassAction}`, () => handleBypassAction(button));
@@ -369,12 +405,7 @@ function handleDocumentClick(event) {
 function handleDocumentSubmit(event) {
   if (event.target === elements.addSiteForm) runAction("sites:add", () => addSite(event));
   if (event.target === elements.addBypassForm) runAction("bypass:add", () => addBypassSource(event));
-}
-
-function handleDocumentMouseDown(event) {
-  if (event.target === elements.quickTranslateHandle || elements.quickTranslateHandle.contains(event.target)) {
-    startTranslateDrag(event);
-  }
+  if (event.target === elements.groqSettingsForm) runAction("knowledge:saveApiKey", () => saveGroqApiKey(event));
 }
 
 function handleReaderSelectionEvent(event) {
@@ -388,16 +419,18 @@ function handleSelectionChange() {
 }
 
 async function loadNextReading() {
+  await window.ReaderProgressTracker?.stop();
   setBusy(true);
-  setStatus("Choosing a site and recent article...");
+  setStatus("正在为你挑选一篇新文章…");
   renderReaderLoading();
 
   try {
     const result = await window.readerApi.getNextReading();
     if (!result.site || !result.article) {
-      const skipped = result.skippedSites?.length ? ` Skipped ${result.skippedSites.length} sites without article URLs.` : "";
-      renderEmptyLibrary(result.readerError || "No article-level URL found. Add better sources or retry.");
-      setStatus(`${result.readerError || "No article-level URL found. Add better sources or retry."}${skipped}`);
+      const skipped = result.skippedSites?.length ? ` 已跳过 ${result.skippedSites.length} 个未找到文章的来源。` : "";
+      const message = localizeReadingError(result.readerError);
+      renderEmptyLibrary(message);
+      setStatus(`${message}${skipped}`);
       return;
     }
 
@@ -412,13 +445,13 @@ async function loadNextReading() {
       renderReaderArticle(result.readerArticle);
       showReader();
     } else {
-      renderReaderFailure(result.readerError || "unknown error");
+      renderReaderFailure(localizeReadingError(result.readerError, "阅读模式暂时无法解析这篇文章。"));
       showReader();
-      setStatus("Article URL found, but reader extraction failed. Original remains available.");
+      setStatus("已找到文章，但阅读模式解析失败；你仍可查看原文。");
     }
     await inspectPaywall(false);
   } catch (error) {
-    setStatus(`Failed to choose reading: ${error.message}`);
+    setStatus(`挑选文章失败：${error.message}`);
   } finally {
     setBusy(false);
   }
@@ -426,15 +459,54 @@ async function loadNextReading() {
 
 function renderCurrentReading() {
   elements.articleTitle.textContent = state.currentArticle.title || state.currentArticle.url;
-  elements.siteMeta.textContent = `${state.currentSite.domain} · ${state.currentArticle.source || "article"}`;
-  setStatus("Ready");
+  elements.siteMeta.textContent = `${state.currentSite.domain} · ${state.currentArticle.source || "文章"}`;
+  setStatus("就绪");
 }
 
-async function markCurrentRead() {
-  if (!state.currentSite || !state.currentArticle) return;
-  await window.readerApi.markRead(state.currentSite, state.currentArticle);
-  setStatus("Marked read.");
-  await loadNextReading();
+async function toggleKnowledgeView() {
+  if (window.KnowledgeUI?.isOpen?.()) {
+    showReader();
+    return;
+  }
+  forceCloseQuickTranslate();
+  closeDrawer();
+  await window.ReaderProgressTracker?.flush();
+  elements.libraryView?.classList.add("hidden");
+  elements.libraryButton?.classList.remove("active");
+  await window.KnowledgeUI?.open();
+}
+
+function getReadingTrackerContext() {
+  if (!state.currentArticle?.url || !state.readerArticle?.content) return null;
+  return {
+    articleUrl: state.currentArticle.url,
+    articleTitle: state.readerArticle.title || state.currentArticle.title,
+    siteId: state.currentSite?.id || "",
+    siteTitle: state.currentSite?.title || "",
+    siteDomain: state.currentSite?.domain || ""
+  };
+}
+
+function renderReadingProgress(progress) {
+  if (!elements.readingProgress) return;
+  if (!progress) {
+    elements.readingProgress.textContent = "阅读进度 0%";
+    if (elements.readingProgressBar) elements.readingProgressBar.style.width = "0%";
+    elements.readingProgress.classList.remove("complete");
+    return;
+  }
+  if (progress.completed) {
+    elements.readingProgress.textContent = "已完成 · 已收录";
+    if (elements.readingProgressBar) elements.readingProgressBar.style.width = "100%";
+    elements.readingProgress.classList.add("complete");
+    return;
+  }
+  const timeRatio = progress.activeMs / Math.max(progress.targets?.activeMs || 180_000, 1);
+  const depthRatio = progress.maxScrollDepth / Math.max(progress.targets?.scrollDepth || 0.9, 0.01);
+  const completion = Math.round(Math.max(0, Math.min(1, Math.min(timeRatio, depthRatio))) * 100);
+  elements.readingProgress.textContent = `阅读进度 ${completion}%`;
+  if (elements.readingProgressBar) elements.readingProgressBar.style.width = `${completion}%`;
+  elements.readingProgress.classList.remove("complete");
 }
 
 async function inspectPaywall(openIfPaywalled) {
@@ -448,10 +520,10 @@ async function inspectPaywall(openIfPaywalled) {
       return;
     }
     if (result.paywalled) {
-      setStatus("Likely paywalled. Bypass sources are ready.");
+      setStatus("这篇文章可能有付费墙，镜像来源已准备好。");
     }
   } catch (error) {
-    setStatus(`Paywall check failed: ${error.message}`);
+    setStatus(`付费墙检测失败：${error.message}`);
   }
 }
 
@@ -464,18 +536,18 @@ async function openNextBypass() {
 
   const next = state.bypassUrls.shift();
   if (!next) {
-    setStatus("No enabled bypass sources.");
+    setStatus("没有可用的镜像来源。");
     return;
   }
 
   await window.readerApi.openExternalArticle(next.url);
-  setStatus(`Opened bypass externally: ${next.name}`);
+  setStatus(`已通过外部浏览器打开镜像：${next.name}`);
 }
 
 async function openOriginal() {
   if (!state.currentArticle?.url) return;
   await window.readerApi.openExternalArticle(state.currentArticle.url);
-  setStatus("Current article opened externally.");
+  setStatus("已在外部浏览器打开原文。");
 }
 
 async function enterReaderMode() {
@@ -483,20 +555,20 @@ async function enterReaderMode() {
   if (state.readerArticle) {
     renderReaderArticle(state.readerArticle);
     showReader();
-    setStatus("Reader mode enabled.");
+    setStatus("已进入阅读模式。");
     return;
   }
 
-  setStatus("Extracting reader mode...");
+  setStatus("正在提取阅读模式…");
 
   try {
     const article = await window.readerApi.extractReaderMode(state.currentArticle.url);
     state.readerArticle = article;
     renderReaderArticle(article);
     showReader();
-    setStatus("Reader mode enabled.");
+    setStatus("已进入阅读模式。");
   } catch (error) {
-    setStatus(`Reader mode failed: ${error.message}`);
+    setStatus(`阅读模式解析失败：${error.message}`);
   }
 }
 
@@ -504,17 +576,21 @@ function renderReaderArticle(article) {
   state.lastSelectionKey = "";
   SelectionService.reset();
   if (!state.translatePinned) closeQuickTranslate();
+  const hostname = new URL(article.url).hostname.replace(/^www\./, "");
+  const readingMinutes = estimateReadingMinutes(article.textContent || "");
   elements.readerArticle.innerHTML = `
+    <div class="article-eyebrow">今日精选 · ${escapeHtml(hostname)}</div>
     <h1>${escapeHtml(article.title)}</h1>
     <div class="reader-meta">
       ${article.byline ? `<span>${escapeHtml(article.byline)}</span>` : ""}
-      ${article.publishedAt ? `<span>${new Date(article.publishedAt).toLocaleDateString()}</span>` : ""}
-      <span>${escapeHtml(new URL(article.url).hostname.replace(/^www\\./, ""))}</span>
+      ${article.publishedAt ? `<span>${new Date(article.publishedAt).toLocaleDateString("zh-CN")}</span>` : ""}
+      <span>${readingMinutes} 分钟</span>
     </div>
     ${article.content}
   `;
   decorateReaderLinks();
   applyReaderSettings();
+  window.requestAnimationFrame(() => window.ReaderProgressTracker?.start());
 }
 
 function decorateReaderLinks() {
@@ -532,28 +608,54 @@ async function openReaderLinkExternally(event) {
   if (!href) return;
   await runAction("article:openReaderLink", async () => {
     await window.readerApi.openExternalArticle(href);
-    setStatus("Link opened externally.");
+    setStatus("已在外部浏览器打开链接。");
   });
 }
 
 function renderReaderFailure(errorMessage) {
+  window.ReaderProgressTracker?.stop();
   state.lastSelectionKey = "";
   SelectionService.reset();
   if (!state.translatePinned) closeQuickTranslate();
   elements.readerArticle.innerHTML = `
-    <h1>${escapeHtml(state.currentArticle.title || "Article")}</h1>
+    <div class="article-eyebrow">今日精选</div>
+    <h1>${escapeHtml(state.currentArticle.title || "文章")}</h1>
     <div class="reader-meta">
       <span>${escapeHtml(new URL(state.currentArticle.url).hostname.replace(/^www\\./, ""))}</span>
     </div>
-    <p>Reader mode could not extract this article.</p>
+    <p>阅读模式无法解析这篇文章。</p>
     <p>${escapeHtml(errorMessage)}</p>
-    <p>Use <strong>Open Article</strong> only if you want to load the full page.</p>
+    <p>你可以点击顶部的<strong>原文</strong>，在外部浏览器中继续阅读。</p>
   `;
 }
 
 function showReader() {
+  if (window.KnowledgeUI?.isOpen?.()) window.KnowledgeUI.close();
+  elements.libraryView?.classList.add("hidden");
+  elements.libraryButton?.classList.remove("active");
+  elements.todayButton?.classList.add("active");
+  elements.knowledgeButton?.classList.remove("active");
   state.showingOriginal = false;
   elements.readerModeView.classList.remove("hidden");
+  window.ReaderProgressTracker?.recordInteraction();
+}
+
+function isLibraryOpen() {
+  return Boolean(elements.libraryView && !elements.libraryView.classList.contains("hidden"));
+}
+
+async function openLibraryView() {
+  if (isLibraryOpen()) return;
+  await window.ReaderProgressTracker?.flush();
+  forceCloseQuickTranslate();
+  closeDrawer();
+  if (window.KnowledgeUI?.isOpen?.()) window.KnowledgeUI.close();
+  elements.readerModeView.classList.add("hidden");
+  elements.libraryView.classList.remove("hidden");
+  elements.todayButton?.classList.remove("active");
+  elements.knowledgeButton?.classList.remove("active");
+  elements.libraryButton?.classList.add("active");
+  await refreshSites();
 }
 
 function adjustReaderFont(delta) {
@@ -573,35 +675,24 @@ function applyReaderSettings() {
 
 function openDrawer(panelName) {
   elements.drawer.classList.remove("hidden");
-  elements.translatePanel.classList.toggle("hidden", panelName !== "translate");
   elements.bypassPanel.classList.toggle("hidden", panelName !== "bypass");
+  elements.aiSettingsPanel.classList.toggle("hidden", panelName !== "ai");
+  elements.sourcePanel?.classList.toggle("hidden", panelName !== "sources");
 
   const titleMap = {
-    translate: "Translation",
-    bypass: "Mirror sources"
+    bypass: "镜像设置",
+    ai: "AI 分析设置",
+    sources: "来源管理"
   };
   elements.drawerTitle.textContent = titleMap[panelName];
 
   if (panelName === "bypass") refreshBypassSources();
-  if (panelName === "translate") fillSelectedText();
+  if (panelName === "ai") refreshAiSettings();
+  if (panelName === "sources") refreshCacheUsage();
 }
 
 function closeDrawer() {
   elements.drawer.classList.add("hidden");
-}
-
-async function translate(direction) {
-  const text = (elements.translationInput.value.trim() || state.lastSelection.text || "").trim();
-  elements.translationOutput.textContent = "Translating...";
-  try {
-    const result = await TranslationService.translate({ text, direction, source: "drawer" });
-    elements.translationOutput.textContent = result.error
-      ? "Translation is temporarily unavailable. Please retry."
-      : result.translatedText;
-  } catch (error) {
-    elements.translationOutput.textContent = "Translation is temporarily unavailable. Please retry.";
-    showToast(error.message);
-  }
 }
 
 function scheduleSelectionTranslation() {
@@ -625,7 +716,7 @@ async function handleSelectionTranslation() {
   }
   state.lastSelectionKey = snapshot.key;
 
-  showQuickTranslate(snapshot.text, snapshot.truncated ? "Translating first 4500 characters..." : "Translating...");
+  showQuickTranslate(snapshot.text, snapshot.truncated ? "正在翻译前 4500 个字符…" : "正在翻译…");
 
   try {
     const result = await TranslationService.translate({
@@ -636,13 +727,13 @@ async function handleSelectionTranslation() {
     });
     if (result.stale) return;
     if (result.error) {
-      elements.quickTranslateResult.textContent = "Translation is temporarily unavailable.";
+      elements.quickTranslateResult.textContent = "翻译服务暂时不可用。";
       showToast(result.translatedText);
       return;
     }
-    elements.quickTranslateResult.textContent = result.translatedText + (result.cached ? "\n\n(cached)" : "");
+    elements.quickTranslateResult.textContent = result.translatedText + (result.cached ? "\n\n（来自缓存）" : "");
   } catch (error) {
-    elements.quickTranslateResult.textContent = "Translation is temporarily unavailable.";
+    elements.quickTranslateResult.textContent = "翻译服务暂时不可用。";
     showToast(error.message);
   }
 }
@@ -658,7 +749,7 @@ function getCurrentArticleId() {
 function showQuickTranslate(sourceText, resultText) {
   elements.quickTranslateSource.textContent = sourceText;
   elements.quickTranslateResult.textContent = resultText;
-  elements.quickTranslate.classList.toggle("loading", /translating/i.test(resultText));
+  elements.quickTranslate.classList.toggle("loading", /翻译|translating/i.test(resultText));
   elements.quickTranslate.classList.remove("hidden");
 }
 
@@ -671,61 +762,55 @@ function closeQuickTranslate() {
 function toggleTranslatePin() {
   state.translatePinned = !state.translatePinned;
   elements.quickTranslate.classList.toggle("pinned", state.translatePinned);
-  elements.pinTranslateButton.textContent = state.translatePinned ? "Pinned" : "Pin";
+  elements.pinTranslateButton.textContent = state.translatePinned ? "已固定" : "固定";
 }
 
-function startTranslateDrag(event) {
-  const rect = elements.quickTranslate.getBoundingClientRect();
-  state.drag = {
-    offsetX: event.clientX - rect.left,
-    offsetY: event.clientY - rect.top
-  };
-}
-
-function moveTranslateDrag(event) {
-  if (!state.drag) return;
-  const left = clamp(event.clientX - state.drag.offsetX, 8, window.innerWidth - elements.quickTranslate.offsetWidth - 8);
-  const top = clamp(event.clientY - state.drag.offsetY, 56, window.innerHeight - elements.quickTranslate.offsetHeight - 8);
-  elements.quickTranslate.style.left = `${left}px`;
-  elements.quickTranslate.style.top = `${top}px`;
-  elements.quickTranslate.style.right = "auto";
-  elements.quickTranslate.style.bottom = "auto";
-}
-
-function stopTranslateDrag() {
-  state.drag = null;
-}
-
-async function fillSelectedText() {
-  const snapshot = SelectionService.getSnapshot();
-  if (snapshot?.text) {
-    elements.translationInput.value = snapshot.text;
-    return;
-  }
-
+function forceCloseQuickTranslate() {
+  state.translatePinned = false;
+  elements.quickTranslate.classList.remove("pinned");
+  elements.quickTranslate.classList.add("hidden");
+  elements.pinTranslateButton.textContent = "固定";
+  state.lastSelectionKey = "";
 }
 
 async function refreshSites() {
   try {
-    const tree = await window.readerApi.getSiteTree();
-    const query = elements.searchInput.value.trim().toLowerCase();
-    const filteredTree = query
-      ? tree
-          .map((folder) => ({
-            ...folder,
-            sites: folder.sites.filter((site) =>
-              `${folder.name} ${site.title} ${site.url}`.toLowerCase().includes(query)
-            )
-          }))
-          .filter((folder) => folder.sites.length)
-      : tree;
-    elements.siteTree.innerHTML = filteredTree
-      .map((folder, index) => renderFolder(folder, index))
-      .join("") || renderEmptySiteTree(query);
-    syncSidebarToCurrentSite();
+    state.libraryTree = await window.readerApi.getSiteTree();
+    const selectedFolderExists = state.libraryTree.some((folder) => folder.name === state.selectedLibraryFolder);
+    if (state.selectedLibraryFolder && !selectedFolderExists) state.selectedLibraryFolder = "";
+    renderLibraryView();
   } catch (error) {
-    setStatus(`Failed to load sites: ${error.message}`);
+    setStatus(`加载来源失败：${error.message}`);
   }
+}
+
+function renderLibraryView() {
+  if (!elements.siteTree || !elements.libraryCategories) return;
+  const query = elements.searchInput.value.trim().toLowerCase();
+  const allSites = state.libraryTree.flatMap((folder) =>
+    folder.sites.map((site) => ({ ...site, folderName: folder.name }))
+  );
+  const selectedFolder = state.libraryTree.find((folder) => folder.name === state.selectedLibraryFolder);
+  const scopedSites = selectedFolder
+    ? selectedFolder.sites.map((site) => ({ ...site, folderName: selectedFolder.name }))
+    : allSites;
+  const visibleSites = query
+    ? scopedSites.filter((site) =>
+        `${site.folderName} ${site.title} ${site.domain || ""} ${site.url}`.toLowerCase().includes(query)
+      )
+    : scopedSites;
+
+  elements.libraryStats.textContent = `${state.libraryTree.length} 个分类 · ${allSites.length} 个来源`;
+  elements.librarySectionTitle.textContent = query
+    ? `搜索结果 · ${visibleSites.length}`
+    : `${state.selectedLibraryFolder || "全部来源"} · ${visibleSites.length}`;
+  elements.libraryCategories.innerHTML = [
+    renderLibraryCategory("", "全部来源", allSites.length),
+    ...state.libraryTree.map((folder) => renderLibraryCategory(folder.name, folder.name, folder.sites.length))
+  ].join("");
+  elements.siteTree.innerHTML = visibleSites.length
+    ? visibleSites.map((site) => renderLibrarySiteItem(site)).join("")
+    : renderEmptySiteTree(query);
 }
 
 function renderReaderLoading() {
@@ -747,13 +832,13 @@ function renderEmptyLibrary(message) {
   state.currentSite = null;
   state.currentArticle = null;
   state.readerArticle = null;
-  elements.articleTitle.textContent = "Reading Randomizer";
-  elements.siteMeta.textContent = "Add a website or import bookmark folders";
+  elements.articleTitle.textContent = "随阅";
+  elements.siteMeta.textContent = "添加网站或导入书签文件夹";
   elements.readerArticle.innerHTML = `
     <div class="empty-state">
-      <h1>Your library is ready for sources.</h1>
+      <h1>从一篇好文章开始。</h1>
       <p>${escapeHtml(message)}</p>
-      <p>Use <strong>Import Bookmark Folders</strong> for a one-time Chrome bookmark import, or <strong>Add One Website</strong> for a single source.</p>
+      <p>打开<strong>来源管理</strong>，导入 Chrome 书签文件夹，或添加一个新网站。</p>
     </div>
   `;
 }
@@ -761,79 +846,72 @@ function renderEmptyLibrary(message) {
 function renderEmptySiteTree(query) {
   return `
     <div class="empty-site-tree">
-      <strong>${query ? "No matching sources" : "No sources yet"}</strong>
-      <span>${query ? "Try another search." : "Import bookmark folders or add one website above."}</span>
+      <strong>${query ? "没有匹配的来源" : "还没有阅读来源"}</strong>
+      <span>${query ? "换一个关键词试试。" : "可以从右上角添加网站或导入书签。"}</span>
     </div>
   `;
 }
 
-function renderFolder(folder, index) {
-  const hasCurrentSite = folder.sites.some((site) => site.id === state.currentSite?.id);
-  const shouldOpen = hasCurrentSite || index < 3 || elements.searchInput.value.trim();
+function renderLibraryCategory(folderName, label, count) {
+  const isActive = folderName === state.selectedLibraryFolder;
   return `
-    <details class="folder ${hasCurrentSite ? "active-folder" : ""}" ${shouldOpen ? "open" : ""}>
-      <summary>${escapeHtml(folder.name)} <span>${folder.sites.length}</span></summary>
-      ${folder.sites.map((site) => renderSiteItem(site)).join("")}
-    </details>
+    <button class="library-category ${isActive ? "active" : ""}" type="button" data-library-folder="${escapeHtml(folderName)}">
+      <span>${escapeHtml(label)}</span>
+      <em>${count}</em>
+    </button>
   `;
 }
 
-function renderSiteItem(site) {
+function renderLibrarySiteItem(site) {
   const isActive = site.id === state.currentSite?.id;
   const activeSource = normalizeComparableUrl(state.currentArticleSource);
+  const articleSources = site.articleSources || [];
   return `
-    <div class="source-card ${isActive ? "active" : ""} ${site.paused ? "paused" : ""}" data-site-id="${site.id}">
-      <div class="source-main">
-        <button class="source-read" data-site-action="read" data-site-id="${site.id}">
-          <span class="source-favicon" aria-hidden="true">${escapeHtml(faviconLabel(site.title || site.domain || site.url))}</span>
-          <span>
+    <article class="library-site-card ${isActive ? "active" : ""} ${site.paused ? "paused" : ""}" data-site-id="${escapeHtml(site.id)}">
+      <button class="library-site-read" type="button" data-site-action="read" data-site-id="${escapeHtml(site.id)}">
+        <span class="library-site-favicon" aria-hidden="true">${escapeHtml(faviconLabel(site.title || site.domain || site.url))}</span>
+        <span class="library-site-copy">
+          <span class="library-site-title-line">
             <strong>${escapeHtml(compactTitle(site.title))}</strong>
-            <em>${escapeHtml(site.domain || hostFromUrl(site.url))}</em>
+            ${isActive ? "<em>正在阅读</em>" : ""}
+            ${site.paused ? "<em class=\"paused-label\">已暂停</em>" : ""}
           </span>
-        </button>
-        <button class="source-open ghost" data-site-action="open" data-site-url="${escapeHtml(site.url)}">Open</button>
+          <span>${escapeHtml(site.domain || hostFromUrl(site.url))}</span>
+          <small>${escapeHtml(site.folderName)}</small>
+        </span>
+      </button>
+      <div class="library-site-side">
+        <span>${articleSources.length ? `${articleSources.length} 个文章入口` : "自动发现文章"}</span>
+        <div class="library-site-actions">
+          <button class="ghost" type="button" data-site-action="open" data-site-url="${escapeHtml(site.url)}">访问网站</button>
+          <button class="ghost" type="button" data-site-action="toggle" data-site-id="${escapeHtml(site.id)}">${site.paused ? "恢复" : "暂停"}</button>
+          <button class="ghost danger" type="button" data-site-action="delete" data-site-id="${escapeHtml(site.id)}">删除</button>
+        </div>
       </div>
-      ${(site.articleSources || []).length ? `
-        <div class="source-list">
-          ${(site.articleSources || []).slice(0, isActive ? 6 : 2).map((source) => {
+      ${articleSources.length ? `
+        <details class="library-entry-details">
+          <summary>查看文章入口</summary>
+          <div class="library-entry-list">
+          ${articleSources.map((source) => {
             const isActiveSource = activeSource && normalizeComparableUrl(source.url) === activeSource;
             return `
-              <div class="source-row ${isActiveSource ? "active" : ""}">
-                <span>${escapeHtml(source.title || source.type || "Source")}</span>
-                <button class="ghost" data-source-action="delete" data-site-id="${site.id}" data-source-url="${escapeHtml(source.url)}">Remove</button>
+              <div class="library-entry-row ${isActiveSource ? "active" : ""}">
+                <span>${escapeHtml(source.title || source.type || "来源")}</span>
+                <button class="ghost" type="button" data-source-action="delete" data-site-id="${escapeHtml(site.id)}" data-source-url="${escapeHtml(source.url)}">移除</button>
               </div>
             `;
           }).join("")}
+          </div>
+        </details>
+      ` : ""}
+      ${isActive && state.currentArticle ? `
+        <div class="library-now-reading">
+          <span>当前文章</span>
+          <strong>${escapeHtml(state.currentArticle.title || "当前文章")}</strong>
         </div>
       ` : ""}
-      <div class="source-tools">
-        <button class="ghost" data-site-action="toggle" data-site-id="${site.id}">${site.paused ? "Resume" : "Pause"}</button>
-        <button class="ghost danger" data-site-action="delete" data-site-id="${site.id}">Delete</button>
-      </div>
-      ${isActive ? `
-        <div class="now-reading">
-          <span>Now reading</span>
-          <strong>${escapeHtml(state.currentArticle?.title || "Current article")}</strong>
-        </div>
-      ` : ""}
-    </div>
+    </article>
   `;
-}
-
-function syncSidebarToCurrentSite() {
-  if (!state.currentSite?.id) return;
-  const activeCard = elements.siteTree.querySelector(`[data-site-id="${cssEscape(state.currentSite.id)}"].source-card`);
-  if (!activeCard) return;
-
-  const folder = activeCard.closest("details");
-  if (folder) folder.open = true;
-
-  window.requestAnimationFrame(() => {
-    activeCard.scrollIntoView({
-      block: "center",
-      behavior: "smooth"
-    });
-  });
 }
 
 function normalizeComparableUrl(url = "") {
@@ -891,13 +969,14 @@ async function handleSiteAction(button) {
 }
 
 async function loadSiteReading(siteId) {
+  await window.ReaderProgressTracker?.stop();
   setBusy(true);
-  setStatus("Finding an article from this site...");
+  setStatus("正在从这个来源查找文章…");
   renderReaderLoading();
   try {
     const result = await window.readerApi.readSite(siteId);
     if (!result.site || !result.article) {
-      setStatus("No valid article found for this site.");
+      setStatus("这个来源暂时没有找到可阅读的文章。");
       return;
     }
     state.currentSite = result.site;
@@ -911,7 +990,7 @@ async function loadSiteReading(siteId) {
       renderReaderArticle(result.readerArticle);
       showReader();
     } else {
-      renderReaderFailure(result.readerError || "unknown error");
+      renderReaderFailure(localizeReadingError(result.readerError, "阅读模式暂时无法解析这篇文章。"));
       showReader();
     }
     await inspectPaywall(false);
@@ -940,12 +1019,12 @@ async function addSite(event) {
   elements.siteUrlInput.value = "";
   elements.siteFeedInput.value = "";
   await refreshSites();
-  setStatus("Website added to your library.");
+  setStatus("网站已添加到资料库。");
 }
 
 async function importChromeSites() {
   const result = await window.readerApi.importChromeSites();
-  setStatus(`Imported ${result.importedCount} sources from bookmark folders. Library total: ${result.totalSites}.`);
+  setStatus(`已从书签文件夹导入 ${result.importedCount} 个来源，资料库共 ${result.totalSites} 个来源。`);
   await refreshSites();
 }
 
@@ -955,8 +1034,42 @@ async function refreshCacheUsage() {
     const usage = await window.readerApi.getCacheUsage();
     elements.cacheUsage.textContent = formatBytes(usage.totalBytes);
   } catch {
-    elements.cacheUsage.textContent = "Unavailable";
+    elements.cacheUsage.textContent = "不可用";
   }
+}
+
+async function refreshAiSettings() {
+  if (!window.readerApi.getKnowledgeSettings || !elements.aiSettingsStatus) return;
+  try {
+    const settings = await window.readerApi.getKnowledgeSettings();
+    const sourceLabel = settings.source === "environment"
+      ? "环境变量"
+      : settings.source === "secure-storage"
+        ? "加密本地存储"
+        : "尚未配置";
+    elements.aiSettingsStatus.textContent = `${settings.model} · ${sourceLabel}`;
+    elements.groqApiKeyInput.placeholder = settings.configured ? "已配置 — 输入新密钥可替换" : "gsk_...";
+    elements.groqApiKeyInput.disabled = !settings.secureStorageAvailable && settings.source !== "environment";
+  } catch (error) {
+    elements.aiSettingsStatus.textContent = `不可用：${error.message}`;
+  }
+}
+
+async function saveGroqApiKey(event) {
+  event.preventDefault();
+  const apiKey = elements.groqApiKeyInput.value.trim();
+  if (!apiKey) throw new Error("请先输入 Groq API 密钥");
+  await window.readerApi.saveGroqApiKey(apiKey);
+  elements.groqApiKeyInput.value = "";
+  await refreshAiSettings();
+  showToast("Groq API 密钥已安全保存，等待中的分析将自动开始。");
+}
+
+async function clearGroqApiKey() {
+  await window.readerApi.saveGroqApiKey("");
+  elements.groqApiKeyInput.value = "";
+  await refreshAiSettings();
+  showToast("已清除保存的 Groq API 密钥。");
 }
 
 async function clearBrowserCache() {
@@ -965,7 +1078,7 @@ async function clearBrowserCache() {
   try {
     const result = await window.readerApi.clearBrowserCache();
     elements.cacheUsage.textContent = formatBytes(result.after.totalBytes);
-    setStatus(`Cleared browser cache. Freed ${formatBytes(result.freedBytes)}.`);
+    setStatus(`浏览器缓存已清理，释放 ${formatBytes(result.freedBytes)}。`);
   } finally {
     elements.clearCacheButton.disabled = false;
   }
@@ -978,7 +1091,7 @@ async function refreshBypassSources() {
       .map((source) => renderBypassItem(source))
       .join("");
   } catch (error) {
-    setStatus(`Failed to load bypass sources: ${error.message}`);
+    setStatus(`加载镜像来源失败：${error.message}`);
   }
 }
 
@@ -986,12 +1099,12 @@ function renderBypassItem(source) {
   return `
     <div class="list-item">
       <div class="list-item-title">${escapeHtml(source.priority)}. ${escapeHtml(source.name)}</div>
-      <div class="list-item-meta">${escapeHtml(source.template)}<br>${source.enabled ? "enabled" : "disabled"}</div>
+      <div class="list-item-meta">${escapeHtml(source.template)}<br>${source.enabled ? "已启用" : "已停用"}</div>
       <div class="button-row">
-        <button class="ghost" data-bypass-action="toggle" data-source-id="${source.id}">${source.enabled ? "Disable" : "Enable"}</button>
-        <button class="ghost" data-bypass-action="up" data-source-id="${source.id}">Up</button>
-        <button class="ghost" data-bypass-action="down" data-source-id="${source.id}">Down</button>
-        <button class="ghost" data-bypass-action="delete" data-source-id="${source.id}">Delete</button>
+        <button class="ghost" data-bypass-action="toggle" data-source-id="${source.id}">${source.enabled ? "停用" : "启用"}</button>
+        <button class="ghost" data-bypass-action="up" data-source-id="${source.id}">上移</button>
+        <button class="ghost" data-bypass-action="down" data-source-id="${source.id}">下移</button>
+        <button class="ghost" data-bypass-action="delete" data-source-id="${source.id}">删除</button>
       </div>
     </div>
   `;
@@ -1035,6 +1148,7 @@ function setBusy(isBusy) {
 
 function setStatus(message) {
   elements.status.textContent = message;
+  elements.status.classList.toggle("visible", Boolean(message) && message !== "就绪");
 }
 
 function showToast(message) {
@@ -1051,7 +1165,7 @@ async function runAction(action, fn) {
     return await fn();
   } catch (error) {
     reportRuntimeError("renderer_action_failed", error, { action });
-    showToast(`${action} failed: ${error.message}`);
+    showToast(`操作失败：${error.message}`);
     return null;
   }
 }
@@ -1096,6 +1210,25 @@ function isRateLimited(value) {
   );
 }
 
+function estimateReadingMinutes(text) {
+  const normalized = String(text || "").trim();
+  if (!normalized) return 1;
+  const cjkCharacters = (normalized.match(/[\u3400-\u9fff]/g) || []).length;
+  const latinWords = normalized.replace(/[\u3400-\u9fff]/g, " ").split(/\s+/).filter(Boolean).length;
+  return Math.max(1, Math.round(cjkCharacters / 420 + latinWords / 220));
+}
+
+function localizeReadingError(message, fallback = "暂时没有找到可阅读的文章，请添加来源或稍后重试。") {
+  const normalized = String(message || "").toLowerCase();
+  if (!normalized) return fallback;
+  if (normalized.includes("no reading sources")) return "还没有阅读来源，请添加网站或导入书签。";
+  if (normalized.includes("no valid article") || normalized.includes("no article")) {
+    return "暂时没有找到适合阅读的文章，请稍后再试。";
+  }
+  if (normalized.includes("timeout")) return "文章加载超时，请稍后再试。";
+  return fallback;
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -1117,7 +1250,7 @@ function formatBytes(bytes = 0) {
 }
 
 function escapeHtml(text = "") {
-  return text
+  return String(text)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
