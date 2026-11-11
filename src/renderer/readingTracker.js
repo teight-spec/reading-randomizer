@@ -159,6 +159,7 @@
     async flushSession(session) {
       if (!session?.articleUrl || !window.readerApi?.saveReadingProgress) return null;
       try {
+        const anchor = this.options?.getAnchor?.() || null;
         const result = await window.readerApi.saveReadingProgress({
           sessionId: session.sessionId,
           articleUrl: session.articleUrl,
@@ -169,7 +170,9 @@
           startedAt: session.startedAt,
           activeMs: Math.round(session.activeMs),
           maxScrollDepth: session.maxScrollDepth,
-          bottomDwellMs: Math.round(session.bottomDwellMs)
+          bottomDwellMs: Math.round(session.bottomDwellMs),
+          progressPercent: Number(anchor?.progressPercent || 0),
+          anchor
         });
         if (this.session?.sessionId === session.sessionId) {
           this.session.lastSavedAt = Date.now();

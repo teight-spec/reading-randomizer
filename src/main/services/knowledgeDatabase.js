@@ -1,6 +1,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { isResumePromptRange } = require("../../renderer/readingAnchor");
 
 const DEFAULT_CATEGORIES = [
   { slug: "world-politics", name: "国际与政治" },
@@ -18,6 +19,8 @@ const READ_THRESHOLDS = {
   scrollDepth: 0.9,
   bottomDwellMs: 5_000
 };
+
+const RECENT_READ_LIMIT = 50;
 
 class KnowledgeDatabase {
   constructor(userDataPath, { DatabaseSyncImpl } = {}) {
@@ -167,6 +170,31 @@ class KnowledgeDatabase {
           CREATE INDEX IF NOT EXISTS reading_sessions_completed_idx
             ON reading_sessions(completed_at, last_seen_at DESC);
         `)
+      },
+      {
+        version: 3,
+        up: () => this.db.exec(`
+          ALTER TABLE reading_sessions ADD COLUMN site_id TEXT;
+          ALTER TABLE reading_sessions ADD COLUMN site_title TEXT;
+          ALTER TABLE reading_sessions ADD COLUMN site_domain TEXT;
+          ALTER TABLE reading_sessions ADD COLUMN progress_percent REAL NOT NULL DEFAULT 0;
+          ALTER TABLE reading_sessions ADD COLUMN anchor_json TEXT;
+          CREATE TABLE IF NOT EXISTS reading_shelf (
+            kind TEXT NOT NULL,
+            canonical_url TEXT NOT NULL,
+            article_url TEXT NOT NULL,
+            article_title TEXT NOT NULL,
+            site_id TEXT,
+            site_title TEXT,
+            site_domain TEXT,
+            progress_percent REAL NOT NULL DEFAULT 0,
+            anchor_json TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (kind, canonical_url)
+          );
+          CREATE INDEX IF NOT EXISTS reading_shelf_recent_idx
+            ON reading_shelf(kind, updated_at DESC);
+        `)
       }
     ];
     const row = this.db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations").get();
@@ -214,15 +242,21 @@ class KnowledgeDatabase {
       this.db.prepare(`
         INSERT INTO reading_sessions(
           session_id, article_url, article_title, started_at, last_seen_at,
-          active_ms, max_scroll_depth, bottom_dwell_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          active_ms, max_scroll_depth, bottom_dwell_ms,
+          site_id, site_title, site_domain, progress_percent, anchor_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id) DO UPDATE SET
           article_url = excluded.article_url,
           article_title = excluded.article_title,
           last_seen_at = excluded.last_seen_at,
           active_ms = MAX(reading_sessions.active_ms, excluded.active_ms),
           max_scroll_depth = MAX(reading_sessions.max_scroll_depth, excluded.max_scroll_depth),
-          bottom_dwell_ms = MAX(reading_sessions.bottom_dwell_ms, excluded.bottom_dwell_ms)
+          bottom_dwell_ms = MAX(reading_sessions.bottom_dwell_ms, excluded.bottom_dwell_ms),
+          site_id = COALESCE(excluded.site_id, reading_sessions.site_id),
+          site_title = COALESCE(excluded.site_title, reading_sessions.site_title),
+          site_domain = COALESCE(excluded.site_domain, reading_sessions.site_domain),
+          progress_percent = excluded.progress_percent,
+          anchor_json = COALESCE(excluded.anchor_json, reading_sessions.anchor_json)
       `).run(
         progress.sessionId,
         canonicalUrl,
@@ -231,7 +265,12 @@ class KnowledgeDatabase {
         nowIso(),
         progress.activeMs,
         progress.maxScrollDepth,
-        progress.bottomDwellMs
+        progress.bottomDwellMs,
+        progress.siteId || null,
+        progress.siteTitle || null,
+        progress.siteDomain || null,
+        progress.progressPercent,
+        progress.anchorJson
       );
 
       const totals = this.db.prepare(`
@@ -286,6 +325,23 @@ class KnowledgeDatabase {
       const article = articleId
         ? this.db.prepare("SELECT knowledge_status FROM articles WHERE id = ?").get(articleId)
         : null;
+      this.db.prepare(`
+        UPDATE reading_shelf
+        SET progress_percent = ?,
+            anchor_json = COALESCE(?, anchor_json),
+            updated_at = CASE WHEN kind = 'recent' THEN ? ELSE updated_at END
+        WHERE canonical_url = ?
+      `).run(progress.progressPercent, progress.anchorJson, nowIso(), canonicalUrl);
+      let removedFromLater = null;
+      if (newlyCompleted) {
+        const saved = this.db.prepare(`
+          SELECT * FROM reading_shelf WHERE kind = 'later' AND canonical_url = ?
+        `).get(canonicalUrl);
+        if (saved) {
+          this.db.prepare("DELETE FROM reading_shelf WHERE kind = 'later' AND canonical_url = ?").run(canonicalUrl);
+          removedFromLater = mapShelfRow(saved, true);
+        }
+      }
       return {
         articleId,
         completed: qualifies,
@@ -295,7 +351,8 @@ class KnowledgeDatabase {
         maxScrollDepth: Number(totals.max_scroll_depth),
         bottomDwellMs: Number(totals.bottom_dwell_ms),
         knowledgeStatus: article?.knowledge_status || null,
-        thresholds: READ_THRESHOLDS
+        thresholds: READ_THRESHOLDS,
+        removedFromLater
       };
     });
   }
@@ -671,6 +728,157 @@ class KnowledgeDatabase {
     }
   }
 
+  saveForLater(payload) {
+    return this.transaction(() => {
+      const row = this.upsertShelfRow("later", payload);
+      return mapShelfRow(row, Boolean(row?.collected));
+    });
+  }
+
+  restoreReadLater(payload) {
+    return this.saveForLater(payload);
+  }
+
+  removeFromShelf(kind, articleUrl) {
+    const safeKind = normalizeShelfKind(kind);
+    const canonical = normalizeUrl(articleUrl);
+    return this.transaction(() => {
+      const existing = this.db.prepare(`
+        SELECT * FROM reading_shelf WHERE kind = ? AND canonical_url = ?
+      `).get(safeKind, canonical);
+      if (!existing) return null;
+      this.db.prepare("DELETE FROM reading_shelf WHERE kind = ? AND canonical_url = ?").run(safeKind, canonical);
+      return mapShelfRow(existing, false);
+    });
+  }
+
+  touchRecent(payload) {
+    return this.transaction(() => {
+      this.upsertShelfRow("recent", payload);
+      this.db.prepare(`
+        DELETE FROM reading_shelf
+        WHERE kind = 'recent' AND rowid NOT IN (
+          SELECT rowid FROM reading_shelf
+          WHERE kind = 'recent'
+          ORDER BY updated_at DESC, rowid DESC
+          LIMIT ?
+        )
+      `).run(RECENT_READ_LIMIT);
+      return this.listShelfRows("recent", RECENT_READ_LIMIT);
+    });
+  }
+
+  listShelf(kind, limit = RECENT_READ_LIMIT) {
+    const safeKind = normalizeShelfKind(kind);
+    const safeLimit = safeKind === "recent"
+      ? Math.min(Math.max(Number(limit) || RECENT_READ_LIMIT, 1), RECENT_READ_LIMIT)
+      : Math.min(Math.max(Number(limit) || 100, 1), 200);
+    return this.listShelfRows(safeKind, safeLimit);
+  }
+
+  findShelfArticle(articleUrl) {
+    const canonical = normalizeUrl(articleUrl);
+    if (!canonical) return null;
+    const row = this.db.prepare(`
+      SELECT s.*, CASE WHEN a.id IS NULL THEN 0 ELSE 1 END AS collected
+      FROM reading_shelf s
+      LEFT JOIN articles a ON a.canonical_url = s.canonical_url
+      WHERE s.canonical_url = ?
+      ORDER BY CASE s.kind WHEN 'later' THEN 0 ELSE 1 END, s.updated_at DESC
+      LIMIT 1
+    `).get(canonical);
+    return row ? mapShelfRow(row, Boolean(row.collected)) : null;
+  }
+
+  getReadingPosition(articleUrl) {
+    const canonical = normalizeUrl(articleUrl);
+    if (!canonical) return null;
+    const row = this.db.prepare(`
+      SELECT article_title, progress_percent, anchor_json, last_seen_at
+      FROM reading_sessions
+      WHERE article_url = ?
+      ORDER BY last_seen_at DESC
+      LIMIT 1
+    `).get(canonical);
+    if (!row) return null;
+    return {
+      articleTitle: row.article_title,
+      progressPercent: Math.round(Number(row.progress_percent) || 0),
+      anchor: parseAnchor(row.anchor_json),
+      lastSeenAt: row.last_seen_at
+    };
+  }
+
+  getResumeOffer() {
+    const row = this.db.prepare(`
+      SELECT article_url, article_title, site_id, site_title, site_domain,
+             progress_percent, anchor_json, last_seen_at
+      FROM reading_sessions
+      ORDER BY last_seen_at DESC, rowid DESC
+      LIMIT 1
+    `).get();
+    if (!row || !isResumePromptRange(row.progress_percent)) return null;
+    return {
+      articleUrl: row.article_url,
+      articleTitle: row.article_title || row.article_url,
+      siteId: row.site_id || "",
+      siteTitle: row.site_title || "",
+      siteDomain: row.site_domain || "",
+      progressPercent: Math.round(Number(row.progress_percent) || 0),
+      anchor: parseAnchor(row.anchor_json),
+      lastSeenAt: row.last_seen_at
+    };
+  }
+
+  upsertShelfRow(kind, payload, timestamp = nowIso()) {
+    const item = normalizeShelfPayload(payload);
+    const canonical = normalizeUrl(item.articleUrl);
+    if (!canonical) throw new Error("A valid article URL is required");
+    this.db.prepare(`
+      INSERT INTO reading_shelf(
+        kind, canonical_url, article_url, article_title, site_id, site_title, site_domain,
+        progress_percent, anchor_json, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(kind, canonical_url) DO UPDATE SET
+        article_url = excluded.article_url,
+        article_title = excluded.article_title,
+        site_id = excluded.site_id,
+        site_title = excluded.site_title,
+        site_domain = excluded.site_domain,
+        progress_percent = excluded.progress_percent,
+        anchor_json = COALESCE(excluded.anchor_json, reading_shelf.anchor_json),
+        updated_at = excluded.updated_at
+    `).run(
+      kind,
+      canonical,
+      item.articleUrl,
+      item.articleTitle || canonical,
+      item.siteId || null,
+      item.siteTitle || null,
+      item.siteDomain || null,
+      item.progressPercent,
+      serializeAnchor(item.anchor),
+      timestamp
+    );
+    return this.db.prepare(`
+      SELECT s.*, CASE WHEN a.id IS NULL THEN 0 ELSE 1 END AS collected
+      FROM reading_shelf s
+      LEFT JOIN articles a ON a.canonical_url = s.canonical_url
+      WHERE s.kind = ? AND s.canonical_url = ?
+    `).get(kind, canonical);
+  }
+
+  listShelfRows(kind, limit) {
+    return this.db.prepare(`
+      SELECT s.*, CASE WHEN a.id IS NULL THEN 0 ELSE 1 END AS collected
+      FROM reading_shelf s
+      LEFT JOIN articles a ON a.canonical_url = s.canonical_url
+      WHERE s.kind = ?
+      ORDER BY s.updated_at DESC, s.rowid DESC
+      LIMIT ?
+    `).all(kind, limit).map((row) => mapShelfRow(row, Boolean(row.collected)));
+  }
+
   close() {
     if (this.db?.isOpen !== false) {
       try {
@@ -697,7 +905,68 @@ function normalizeProgress(payload) {
     startedAt: validDate(payload.startedAt) || nowIso(),
     activeMs: clampInteger(payload.activeMs, 0, 24 * 60 * 60 * 1000, 0),
     maxScrollDepth: clampNumber(payload.maxScrollDepth, 0, 1, 0),
-    bottomDwellMs: clampInteger(payload.bottomDwellMs, 0, 60 * 60 * 1000, 0)
+    bottomDwellMs: clampInteger(payload.bottomDwellMs, 0, 60 * 60 * 1000, 0),
+    progressPercent: clampNumber(payload.progressPercent, 0, 100, 0),
+    anchorJson: serializeAnchor(payload.anchor)
+  };
+}
+
+function normalizeShelfPayload(payload = {}) {
+  return {
+    articleUrl: String(payload.articleUrl || "").trim(),
+    articleTitle: truncate(cleanText(payload.articleTitle || ""), 500),
+    siteId: truncate(cleanText(payload.siteId || ""), 200),
+    siteTitle: truncate(cleanText(payload.siteTitle || ""), 300),
+    siteDomain: truncate(cleanText(payload.siteDomain || ""), 200),
+    progressPercent: clampNumber(payload.progressPercent, 0, 100, 0),
+    anchor: payload.anchor && typeof payload.anchor === "object" ? payload.anchor : null
+  };
+}
+
+function normalizeShelfKind(kind) {
+  return kind === "recent" ? "recent" : "later";
+}
+
+function serializeAnchor(anchor) {
+  if (!anchor || typeof anchor !== "object") return null;
+  const kind = anchor.kind === "paragraph" || anchor.kind === "percentage" ? anchor.kind : "";
+  if (!kind) return null;
+  const stored = {
+    kind,
+    progressPercent: clampNumber(anchor.progressPercent, 0, 100, 0)
+  };
+  if (kind === "paragraph") {
+    stored.paragraphIndex = clampInteger(anchor.paragraphIndex, 0, 100_000, 0);
+    stored.charOffset = clampInteger(anchor.charOffset, 0, 200_000, 0);
+    stored.paragraphCount = clampInteger(anchor.paragraphCount, 0, 100_000, 0);
+  }
+  return JSON.stringify(stored);
+}
+
+function parseAnchor(value) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function mapShelfRow(row, collected = false) {
+  if (!row) return null;
+  return {
+    kind: row.kind,
+    articleUrl: row.article_url,
+    canonicalUrl: row.canonical_url,
+    articleTitle: row.article_title,
+    siteId: row.site_id || "",
+    siteTitle: row.site_title || "",
+    siteDomain: row.site_domain || "",
+    progressPercent: Math.round(Number(row.progress_percent) || 0),
+    anchor: parseAnchor(row.anchor_json),
+    collected: Boolean(collected || row.collected),
+    updatedAt: row.updated_at
   };
 }
 
@@ -782,6 +1051,7 @@ module.exports = {
   KnowledgeDatabase,
   DEFAULT_CATEGORIES,
   READ_THRESHOLDS,
+  RECENT_READ_LIMIT,
   normalizeUrl,
   normalizeProgress
 };

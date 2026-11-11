@@ -1,0 +1,48 @@
+{
+  "packs": [
+    {
+      "id": "english-close-reading",
+      "title": "英文精读",
+      "description": "杂志和长文，适合逐段练英语。",
+      "sites": [
+        {
+          "title": "The New Yorker",
+          "url": "https://www.newyorker.com/",
+          "feedUrl": "https://www.newyorker.com/feed/magazine/rss"
+        },
+        {
+          "title": "The Atlantic",
+          "url": "https://www.theatlantic.com/",
+          "feedUrl": "https://www.theatlantic.com/feed/all/"
+        },
+        {
+          "title": "The Economist",
+          "url": "https://www.economist.com/",
+          "feedUrl": "https://www.economist.com/latest/rss.xml"
+        }
+      ]
+    },
+    {
+      "id": "knowledge-base",
+      "title": "知识沉淀",
+      "description": "报道和奖项，用来积累可回看的知识。",
+      "sites": [
+        {
+          "title": "The New York Times",
+          "url": "https://www.nytimes.com/",
+          "feedUrl": "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml"
+        },
+        {
+          "title": "The Guardian",
+          "url": "https://www.theguardian.com/",
+          "feedUrl": "https://www.theguardian.com/world/rss"
+        },
+        {
+          "title": "Pulitzer Prizes",
+          "url": "https://www.pulitzer.org/",
+          "feedUrl": "https://www.pulitzer.org/news.xml"
+        }
+      ]
+    }
+  ]
+}

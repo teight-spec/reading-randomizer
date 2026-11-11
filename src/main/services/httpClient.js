@@ -16,6 +16,8 @@ const DEFAULT_HEADERS = {
   "DNT": "1"
 };
 
+const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024;
+
 const HEADER_PROFILES = {
   "browser-document": {
     "Accept":
@@ -62,6 +64,7 @@ async function requestText(url, options = {}) {
 function requestTextWithElectronNet(url, options = {}) {
   return new Promise((resolve, reject) => {
     let settled = false;
+    const maxBodyBytes = resolveMaxBodyBytes(options);
     const request = electronNet.request({
       method: options.method || "GET",
       url
@@ -92,9 +95,18 @@ function requestTextWithElectronNet(url, options = {}) {
     }
 
     request.on("response", (response) => {
-      let body = "";
+      const chunks = [];
+      let received = 0;
       response.on("data", (chunk) => {
-        body += chunk.toString();
+        if (settled) return;
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        received += buffer.length;
+        if (received > maxBodyBytes) {
+          request.abort();
+          finish(reject, responseTooLargeError(maxBodyBytes, options.source));
+          return;
+        }
+        chunks.push(buffer);
       });
       response.on("end", () => {
         finish(resolve, {
@@ -102,7 +114,7 @@ function requestTextWithElectronNet(url, options = {}) {
           status: response.statusCode,
           url,
           headers: response.headers,
-          text: body
+          text: Buffer.concat(chunks).toString("utf8")
         });
       });
     });
@@ -165,15 +177,18 @@ async function requestTextWithFetch(url, options = {}) {
       },
       signal: controller.signal
     });
+    const maxBodyBytes = resolveMaxBodyBytes(options);
+    const text = await readResponseTextWithCap(response, maxBodyBytes, controller);
 
     return {
       ok: response.ok,
       status: response.status,
       url: response.url,
       headers: Object.fromEntries(response.headers.entries()),
-      text: await response.text()
+      text
     };
   } catch (error) {
+    if (error?.kind === "response_too_large") throw error;
     if (controller.signal.aborted) {
       const reason = controller.signal.reason || "canceled";
       const abortError = new Error(reason === "timeout" ? "request timed out" : "request canceled");
@@ -193,7 +208,50 @@ function headersForProfile(profile) {
   return HEADER_PROFILES[profile] || {};
 }
 
+function resolveMaxBodyBytes(options = {}) {
+  const value = Number(options.maxBodyBytes);
+  if (Number.isFinite(value) && value > 0) return Math.floor(value);
+  return DEFAULT_MAX_BODY_BYTES;
+}
+
+function responseTooLargeError(maxBodyBytes, source) {
+  const error = new Error(`response body exceeded ${maxBodyBytes} bytes`);
+  error.code = "ERR_RESPONSE_TOO_LARGE";
+  error.kind = "response_too_large";
+  error.source = source || "unknown";
+  return error;
+}
+
+async function readResponseTextWithCap(response, maxBodyBytes, controller) {
+  if (!response.body || typeof response.body.getReader !== "function") {
+    const text = await response.text();
+    if (Buffer.byteLength(text) > maxBodyBytes) {
+      throw responseTooLargeError(maxBodyBytes);
+    }
+    return text;
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let received = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const buffer = Buffer.from(value);
+    received += buffer.length;
+    if (received > maxBodyBytes) {
+      await reader.cancel().catch(() => {});
+      controller.abort("response_too_large");
+      throw responseTooLargeError(maxBodyBytes);
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 module.exports = {
+  DEFAULT_MAX_BODY_BYTES,
   requestText,
+  resolveMaxBodyBytes,
   sanitizeElectronNetHeaders
 };

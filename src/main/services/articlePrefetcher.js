@@ -34,6 +34,10 @@ class ArticlePrefetcher {
     return this.currentPromise;
   }
 
+  invalidate() {
+    this.currentPromise = null;
+  }
+
   async consume() {
     const result = await this.start();
     this.currentPromise = null;
