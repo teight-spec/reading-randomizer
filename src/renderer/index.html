@@ -63,7 +63,10 @@
         <section class="reading-stage">
         <article id="readerModeView" class="reader-mode">
           <div id="resumePrompt" class="resume-prompt hidden">
-            <p id="resumePromptText"></p>
+            <div class="resume-prompt-copy">
+              <p id="resumePromptText"></p>
+              <p class="resume-prompt-hint">或稍等，将为你换一篇新的</p>
+            </div>
             <div class="resume-prompt-actions">
               <button id="resumeContinueButton" type="button">继续读</button>
               <button id="resumeFreshButton" class="ghost" type="button">读新的一篇</button>
@@ -102,13 +105,14 @@
               </div>
             </section>
             <section id="onboardingStepFolders" class="onboarding-step hidden">
-              <span class="eyebrow">第 2 步</span>
-              <h1>选择书签文件夹</h1>
+              <span id="onboardingFoldersEyebrow" class="eyebrow">第 2 步</span>
+              <h1 id="onboardingFoldersTitle">选择书签文件夹</h1>
               <p id="bookmarkFolderHint" class="onboarding-hint hidden"></p>
               <div id="bookmarkFolderTree" class="bookmark-folder-tree"></div>
               <p id="bookmarkFolderSummary" class="bookmark-folder-summary">已选 0 个文件夹，共 0 个链接</p>
               <div class="onboarding-actions">
                 <button id="onboardingFoldersNextButton" type="button">下一步</button>
+                <button id="onboardingFoldersCancelButton" class="ghost hidden" type="button">取消</button>
               </div>
             </section>
             <section id="onboardingStepPacks" class="onboarding-step hidden">

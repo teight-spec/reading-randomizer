@@ -1378,6 +1378,60 @@ test("resume prompt is offered only from 5% through 90%, with paragraph anchor f
   database.close();
 });
 
+test("reader shortcuts stay gated to the visible reader, and shelf time and continue tags stay explicit", () => {
+  const { formatShelfTime, isReaderShortcutEnabled, shouldShowContinueTag } = require("../src/renderer/readingAnchor");
+  const visible = {
+    readerVisible: true,
+    libraryOpen: false,
+    shelfOpen: false,
+    onboardingOpen: false,
+    knowledgeOpen: false
+  };
+  assert.equal(isReaderShortcutEnabled(visible), true);
+  assert.equal(isReaderShortcutEnabled({ ...visible, readerVisible: false }), false);
+  assert.equal(isReaderShortcutEnabled({ ...visible, libraryOpen: true }), false);
+  assert.equal(isReaderShortcutEnabled({ ...visible, shelfOpen: true }), false);
+  assert.equal(isReaderShortcutEnabled({ ...visible, onboardingOpen: true }), false);
+  assert.equal(isReaderShortcutEnabled({ ...visible, knowledgeOpen: true }), false);
+
+  const now = new Date(2026, 10, 11, 18, 0, 0).getTime();
+  assert.equal(formatShelfTime(new Date(2026, 10, 11, 13, 40, 0).toISOString(), now), "今天 13:40");
+  assert.equal(formatShelfTime(new Date(2026, 10, 10, 9, 0, 0).toISOString(), now), "昨天");
+  assert.equal(formatShelfTime(new Date(2026, 10, 8, 9, 0, 0).toISOString(), now), "11月08日");
+  assert.equal(formatShelfTime("not-a-date", now), "");
+
+  assert.equal(shouldShowContinueTag({ progressPercent: 42, collected: false }), true);
+  assert.equal(shouldShowContinueTag({ progressPercent: 5, collected: false }), true);
+  assert.equal(shouldShowContinueTag({ progressPercent: 90, collected: false }), true);
+  assert.equal(shouldShowContinueTag({ progressPercent: 4, collected: false }), false);
+  assert.equal(shouldShowContinueTag({ progressPercent: 91, collected: false }), false);
+  assert.equal(shouldShowContinueTag({ progressPercent: 42, collected: true }), false);
+});
+
+test("opening a saved article does not increase the knowledge issue count", async () => {
+  const { KnowledgeDatabase } = require("../src/main/services/knowledgeDatabase");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reader-open-saved-"));
+  const database = new KnowledgeDatabase(dir);
+  const before = database.getStats().total;
+  database.saveForLater({
+    articleUrl: "https://example.com/saved",
+    articleTitle: "Saved",
+    siteTitle: "Example",
+    siteDomain: "example.com",
+    progressPercent: 40
+  });
+  database.touchRecent({
+    articleUrl: "https://example.com/saved",
+    articleTitle: "Saved",
+    siteTitle: "Example",
+    siteDomain: "example.com",
+    progressPercent: 40
+  });
+  assert.equal(database.getStats().total, before);
+  assert.equal(database.listShelf("recent").length, 1);
+  database.close();
+});
+
 test("secure storage availability follows safeStorage.isEncryptionAvailable", () => {
   const { SecureSettingsStore } = require("../src/main/services/secureSettingsStore");
   const calls = [];

@@ -1498,6 +1498,20 @@ pre {
   font-size: 12px;
 }
 
+.resume-prompt-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.resume-prompt-hint {
+  color: var(--muted);
+}
+
+#readLaterButton.is-saved {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .resume-prompt-actions {
   display: flex;
   gap: 6px;

@@ -122,6 +122,10 @@ const elements = {
   onboardingSkipButton: document.querySelector("#onboardingSkipButton"),
   onboardingFoldersNextButton: document.querySelector("#onboardingFoldersNextButton"),
   onboardingFinishButton: document.querySelector("#onboardingFinishButton"),
+  onboardingFoldersCancelButton: document.querySelector("#onboardingFoldersCancelButton"),
+  onboardingFoldersEyebrow: document.querySelector("#onboardingFoldersEyebrow"),
+  onboardingFoldersTitle: document.querySelector("#onboardingFoldersTitle"),
+  onboardingDots: document.querySelector(".onboarding-dots"),
   onboardingStepWelcome: document.querySelector("#onboardingStepWelcome"),
   onboardingStepFolders: document.querySelector("#onboardingStepFolders"),
   onboardingStepPacks: document.querySelector("#onboardingStepPacks"),
@@ -369,7 +373,7 @@ async function boot() {
     scrollElement: elements.readerModeView,
     getContext: getReadingTrackerContext,
     getAnchor: () => window.ReadingAnchor?.captureFromDom?.(elements.readerModeView, elements.readerArticle) || null,
-    isReaderVisible: () => !elements.readerModeView.classList.contains("hidden") && !isLibraryOpen() && !isShelfOpen() && !isOnboardingOpen() && !window.KnowledgeUI?.isOpen?.(),
+    isReaderVisible,
     onProgress: renderReadingProgress,
     onCompleted: (result) => {
       refreshIssueNumber();
@@ -461,11 +465,13 @@ function handleDocumentClick(event) {
   if (button === elements.onboardingStartButton) setOnboardingStep(2);
   if (button === elements.onboardingSkipButton) runAction("onboarding:skip", skipOnboarding);
   if (button === elements.onboardingFoldersNextButton) runAction("onboarding:folders", advanceFromFolderStep);
+  if (button === elements.onboardingFoldersCancelButton) showReader();
   if (button === elements.onboardingFinishButton) runAction("onboarding:finish", finishOnboarding);
   if (button === elements.resumeContinueButton) runAction("reading:resume", continueResume);
   if (button === elements.resumeFreshButton) runAction("reading:fresh", dismissResumeAndReadNew);
   if (button.id === "openMirrorButton") runAction("article:openArchive", openNextBypass);
   if (button.id === "removeFailedShelfButton") runAction("shelf:removeFailed", removeFailedShelfArticle);
+  if (button.id === "backToShelfButton") runAction("shelf:back", openShelfView);
   if (button.id === "undoReadLaterButton") {
     const undo = state.undoReadLater;
     state.undoReadLater = null;
@@ -508,13 +514,23 @@ function handleDocumentChange(event) {
   }
 }
 
+function isReaderVisible() {
+  return window.ReadingAnchor.isReaderShortcutEnabled({
+    readerVisible: !elements.readerModeView.classList.contains("hidden"),
+    libraryOpen: isLibraryOpen(),
+    shelfOpen: isShelfOpen(),
+    onboardingOpen: isOnboardingOpen(),
+    knowledgeOpen: Boolean(window.KnowledgeUI?.isOpen?.())
+  });
+}
+
 function handleReadingShortcut(event) {
   if (event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return;
   const tag = event.target?.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || event.target?.isContentEditable) return;
   const key = String(event.key || "").toLowerCase();
   if (key !== "s" && key !== "n") return;
-  if (isOnboardingOpen() || state.busy) return;
+  if (!isReaderVisible() || state.busy) return;
   if (key === "s") {
     if (!state.currentArticle?.url) return;
     event.preventDefault();
@@ -1529,6 +1545,8 @@ function updateReadLaterButton() {
   if (!elements.readLaterButton) return;
   const saved = Boolean(state.currentArticle?.url && state.savedLaterUrls.has(state.currentArticle.url));
   elements.readLaterButton.textContent = saved ? "已存" : "稍后读";
+  elements.readLaterButton.classList.toggle("is-saved", saved);
+  elements.readLaterButton.setAttribute("aria-pressed", saved ? "true" : "false");
 }
 
 async function refreshShelf() {
@@ -1620,6 +1638,7 @@ function renderShelf() {
         <strong>${escapeHtml(item.articleTitle || item.articleUrl)}</strong>
         <span>${escapeHtml(item.siteTitle || item.siteDomain || "来源未知")} · ${escapeHtml(formatShelfTime(item.updatedAt))} · ${Number(item.progressPercent) || 0}%</span>
         ${item.collected ? `<em class="shelf-collected">已收录</em>` : ""}
+        ${window.ReadingAnchor.shouldShowContinueTag(item) ? `<em class="shelf-collected">继续</em>` : ""}
       </button>
       <button class="shelf-remove ghost" type="button" data-shelf-action="remove" data-shelf-url="${escapeHtml(item.articleUrl)}">移除</button>
     </article>
@@ -1674,7 +1693,12 @@ function renderUnavailableArticle() {
   elements.readerArticle.innerHTML = `
     <div class="empty-state">
       <h1>这篇暂时打不开</h1>
-      <button id="removeFailedShelfButton" type="button">移出</button>
+      <p>保存的原文暂时无法解析。</p>
+      <div class="onboarding-actions">
+        <button id="backToShelfButton" class="ghost" type="button">返回列表</button>
+        <button id="removeFailedShelfButton" type="button">移出</button>
+        ${mirrorActionHtml()}
+      </div>
     </div>
   `;
 }
@@ -1687,10 +1711,8 @@ async function removeFailedShelfArticle() {
   await openShelfView();
 }
 
-function formatShelfTime(value) {
-  const timestamp = Date.parse(value || "");
-  if (!Number.isFinite(timestamp)) return "";
-  return new Date(timestamp).toLocaleString("zh-CN", { hour12: false });
+function formatShelfTime(value, now = Date.now()) {
+  return window.ReadingAnchor.formatShelfTime(value, now);
 }
 
 function restoreReadingPosition(resume) {
@@ -1778,12 +1800,19 @@ function showOnboarding(onboarding, mode) {
   if (elements.bookmarkFolderHint) {
     const showHint = onboarding?.chromeAvailable === false;
     elements.bookmarkFolderHint.textContent = showHint
-      ? (onboarding.chromeMessage || "没有检测到 Chrome 书签。可以先跳过，之后再从设置里导入。")
+      ? "没找到 Chrome 书签，可以直接用下一步的推荐来源。"
       : "";
     elements.bookmarkFolderHint.classList.toggle("hidden", !showHint);
   }
+  const settingsMode = mode === "settings";
+  elements.onboardingDots?.classList.toggle("hidden", settingsMode);
+  elements.onboardingFoldersEyebrow?.classList.toggle("hidden", settingsMode);
+  if (elements.onboardingFoldersTitle) {
+    elements.onboardingFoldersTitle.textContent = settingsMode ? "导入书签" : "选择书签文件夹";
+  }
+  elements.onboardingFoldersCancelButton?.classList.toggle("hidden", !settingsMode);
   if (elements.onboardingFoldersNextButton) {
-    elements.onboardingFoldersNextButton.textContent = mode === "settings" ? "导入所选文件夹" : "下一步";
+    elements.onboardingFoldersNextButton.textContent = settingsMode ? "导入所选文件夹" : "下一步";
   }
   setOnboardingStep(mode === "settings" ? 2 : 1);
   updateFinishButton();
@@ -1833,15 +1862,19 @@ function updateFolderSummary() {
 function renderOnboardingPacks() {
   if (!elements.sourcePackList) return;
   const packs = state.onboarding?.packs || [];
-  elements.sourcePackList.innerHTML = packs.map((pack) => `
-    <label class="source-pack-card">
-      <input type="checkbox" data-pack-id="${escapeHtml(pack.id)}" ${state.selectedPackIds.has(pack.id) ? "checked" : ""}>
-      <span>
-        <strong>${escapeHtml(pack.title)}</strong>
-        <span>${(pack.sites || []).map((site) => escapeHtml(site.title)).join(" · ")}</span>
-      </span>
-    </label>
-  `).join("");
+  elements.sourcePackList.innerHTML = packs.map((pack) => {
+    const sites = pack.sites || [];
+    return `
+      <label class="source-pack-card" title="${escapeHtml(sites.map((site) => site.title).join("、"))}">
+        <input type="checkbox" data-pack-id="${escapeHtml(pack.id)}" ${state.selectedPackIds.has(pack.id) ? "checked" : ""}>
+        <span>
+          <strong>${escapeHtml(pack.title)}</strong>
+          <span>${escapeHtml(pack.description || "")}</span>
+          <span>共 ${sites.length} 个来源</span>
+        </span>
+      </label>
+    `;
+  }).join("");
 }
 
 function updateFinishButton() {
@@ -1885,8 +1918,8 @@ async function finishOnboarding() {
   });
   hideOnboarding();
   await refreshSites();
-  setStatus(`已添加 ${result.added} 个来源，跳过 ${result.duplicates} 个重复链接。`);
   await loadNextReading();
+  if (state.readerArticle) showToast(`已添加 ${result.added} 个来源`);
 }
 
 async function skipOnboarding() {

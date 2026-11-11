@@ -88,6 +88,37 @@
     });
   }
 
+  function isReaderShortcutEnabled(flags = {}) {
+    return Boolean(
+      flags.readerVisible &&
+      !flags.libraryOpen &&
+      !flags.shelfOpen &&
+      !flags.onboardingOpen &&
+      !flags.knowledgeOpen
+    );
+  }
+
+  function shouldShowContinueTag(item = {}) {
+    return !item.collected && isResumePromptRange(item.progressPercent);
+  }
+
+  function formatShelfTime(value, now = Date.now()) {
+    const timestamp = Date.parse(value || "");
+    if (!Number.isFinite(timestamp)) return "";
+    const date = new Date(timestamp);
+    const current = new Date(now);
+    const startOfToday = new Date(current.getFullYear(), current.getMonth(), current.getDate()).getTime();
+    const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+    const dayDiff = Math.round((startOfToday - startOfDate) / 86_400_000);
+    if (dayDiff === 0) {
+      const hours = String(date.getHours()).padStart(2, "0");
+      const minutes = String(date.getMinutes()).padStart(2, "0");
+      return `今天 ${hours}:${minutes}`;
+    }
+    if (dayDiff === 1) return "昨天";
+    return `${date.getMonth() + 1}月${String(date.getDate()).padStart(2, "0")}日`;
+  }
+
   function topWithin(scrollElement, element) {
     const scrollRect = scrollElement.getBoundingClientRect();
     const rect = element.getBoundingClientRect();
@@ -97,8 +128,11 @@
   return {
     captureAnchor,
     captureFromDom,
+    formatShelfTime,
+    isReaderShortcutEnabled,
     isResumePromptRange,
     progressPercentFromScroll,
-    resolveRestoreTarget
+    resolveRestoreTarget,
+    shouldShowContinueTag
   };
 });
