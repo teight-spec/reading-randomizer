@@ -22,11 +22,20 @@ const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font"]);
 
 function installRequestBlocker(session) {
   session.webRequest.onBeforeRequest((details, callback) => {
-    const host = safeHost(details.url);
-    const blockedByHost = BLOCKED_HOST_PATTERNS.some((pattern) => host.includes(pattern));
-    const blockedByType = BLOCKED_RESOURCE_TYPES.has(details.resourceType) && blockedByHost;
-    callback({ cancel: blockedByHost || blockedByType });
+    callback({ cancel: shouldCancelRequest(details) });
   });
+}
+
+// Tracker and ad hosts are cancelled for every resource type, including the
+// heavy types below. Image, media, and font requests are cancelled only when
+// the host itself is on that list. Resource type is never an independent
+// reason to cancel, so article images in the reader stay available.
+function shouldCancelRequest(details = {}) {
+  const host = safeHost(details.url);
+  const blockedByHost = Boolean(host) && BLOCKED_HOST_PATTERNS.some((pattern) => host.includes(pattern));
+  if (!blockedByHost) return false;
+  const heavyResourceOnTracker = BLOCKED_RESOURCE_TYPES.has(details.resourceType);
+  return heavyResourceOnTracker || blockedByHost;
 }
 
 function safeHost(url) {
@@ -38,5 +47,7 @@ function safeHost(url) {
 }
 
 module.exports = {
-  installRequestBlocker
+  BLOCKED_RESOURCE_TYPES,
+  installRequestBlocker,
+  shouldCancelRequest
 };

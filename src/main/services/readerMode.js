@@ -246,7 +246,8 @@ function extractFromHtml(url, html, diagnostics = {}) {
 
 function discoverArticleVariants(html, baseUrl) {
   const $ = require("cheerio").load(html);
-  const urls = [baseUrl];
+  const urls = [];
+  rememberArticleUrl(urls, baseUrl);
   const selectors = [
     "link[rel='canonical']",
     "link[rel='amphtml']",
@@ -267,8 +268,7 @@ function discoverArticleVariants(html, baseUrl) {
       if (!isReadMore) return;
 
       try {
-        const url = new URL(href, baseUrl).toString();
-        if (!urls.includes(url)) urls.push(url);
+        rememberArticleUrl(urls, new URL(href, baseUrl).toString());
       } catch {
         // Ignore malformed candidate URLs.
       }
@@ -276,6 +276,22 @@ function discoverArticleVariants(html, baseUrl) {
   }
 
   return urls.slice(0, 5);
+}
+
+function rememberArticleUrl(urls, value) {
+  if (!isSafeArticleUrl(value) || urls.includes(value)) return;
+  urls.push(value);
+}
+
+function isSafeArticleUrl(value) {
+  try {
+    const parsed = new URL(value);
+    if (!["http:", "https:"].includes(parsed.protocol)) return false;
+    if (parsed.username || parsed.password) return false;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function validateArticle(article, diagnostics = {}, parser = "unknown") {
@@ -765,6 +781,8 @@ function escapeHtml(text = "") {
 }
 
 module.exports = {
+  discoverArticleVariants,
   extractReaderArticle,
+  isSafeArticleUrl,
   _extractFromHtml: extractFromHtml
 };

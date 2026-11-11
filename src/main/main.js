@@ -30,12 +30,36 @@ const {
   validateBypassSource,
   validateKnowledgeFilters,
   validateKnowledgePatch,
+  validateOnboardingSelection,
   validateReadingProgress,
   validateRendererError,
+  validateShelfItem,
   validateSitePatch,
   validateSitePayload,
   validateTranslationPayload
 } = require("./services/inputValidation");
+
+const DENIED_VERIFICATION_PERMISSIONS = new Set([
+  "media",
+  "mediaKeySystem",
+  "geolocation",
+  "notifications",
+  "midi",
+  "midiSysex",
+  "pointerLock",
+  "fullscreen",
+  "openExternal",
+  "idle-detection",
+  "display-capture",
+  "clipboard-read",
+  "serial",
+  "hid",
+  "usb",
+  "bluetooth",
+  "fileSystem"
+]);
+const verificationWebContentsIds = new Set();
+let verificationPermissionGuardInstalled = false;
 
 let mainWindow;
 let historyStore;
@@ -173,6 +197,85 @@ function registerIpcHandlers() {
     return result;
   });
 
+  handleIpc("reading:saveLater", async (_event, payload) => {
+    return knowledgeDatabase.saveForLater(validateShelfItem(payload));
+  });
+
+  handleIpc("reading:restoreLater", async (_event, payload) => {
+    return knowledgeDatabase.restoreReadLater(validateShelfItem(payload));
+  });
+
+  handleIpc("reading:removeShelf", async (_event, kind, url) => {
+    const safeKind = kind === "recent" ? "recent" : "later";
+    return knowledgeDatabase.removeFromShelf(
+      safeKind,
+      normalizeHttpUrl(url, { label: "Article URL" })
+    );
+  });
+
+  handleIpc("reading:listShelf", async () => {
+    return {
+      later: knowledgeDatabase.listShelf("later", 200),
+      recent: knowledgeDatabase.listShelf("recent", 50)
+    };
+  });
+
+  handleIpc("reading:touchRecent", async (_event, payload) => {
+    knowledgeDatabase.touchRecent(validateShelfItem(payload));
+    return true;
+  });
+
+  handleIpc("reading:resumeOffer", async () => {
+    return knowledgeDatabase.getResumeOffer();
+  });
+
+  handleIpc("reading:openSaved", async (_event, url) => {
+    const articleUrl = normalizeHttpUrl(url, { label: "Article URL" });
+    const shelfItem = knowledgeDatabase.findShelfArticle(articleUrl);
+    const position = knowledgeDatabase.getReadingPosition(articleUrl);
+    const cached = await articleCache.getArticle(articleUrl);
+    let readerArticle = cached?.readerArticle || null;
+    let readerError = null;
+    if (!readerArticle) {
+      try {
+        readerArticle = await extractReaderArticle(articleUrl);
+      } catch (error) {
+        readerError = error.message;
+      }
+    }
+    const site = cached?.site || {
+      id: shelfItem?.siteId || "",
+      title: shelfItem?.siteTitle || shelfItem?.siteDomain || "已保存的文章",
+      domain: shelfItem?.siteDomain || "",
+      url: articleUrl
+    };
+    const article = {
+      ...(cached?.article || {}),
+      title: readerArticle?.title || shelfItem?.articleTitle || cached?.article?.title || articleUrl,
+      url: articleUrl,
+      source: cached?.article?.source || "saved"
+    };
+    if (readerArticle) {
+      knowledgeDatabase.touchRecent({
+        articleUrl,
+        articleTitle: article.title,
+        siteId: site.id || "",
+        siteTitle: site.title || "",
+        siteDomain: site.domain || "",
+        progressPercent: position?.progressPercent || shelfItem?.progressPercent || 0,
+        anchor: position?.anchor || shelfItem?.anchor || null
+      });
+    }
+    return {
+      site,
+      article,
+      readerArticle,
+      readerError,
+      resume: position,
+      unavailable: !readerArticle
+    };
+  });
+
   handleIpc("knowledge:list", async (_event, filters) => {
     return knowledgeDatabase.listArticles(validateKnowledgeFilters(filters));
   });
@@ -268,8 +371,36 @@ function registerIpcHandlers() {
     return siteHealthStore.load();
   });
 
-  handleIpc("sites:importChrome", async () => {
-    return siteStore.importChromeBookmarks();
+  handleIpc("onboarding:state", async () => {
+    const state = await siteStore.getOnboardingState();
+    const folders = await siteStore.listBookmarkFolders();
+    return {
+      ...state,
+      chromeAvailable: folders.available === true,
+      chromeMessage: folders.message || "",
+      folders: publicFolderTree(folders.folders || [])
+    };
+  });
+
+  handleIpc("onboarding:apply", async (_event, payload) => {
+    const selection = validateOnboardingSelection(payload);
+    const result = await siteStore.applyOnboardingSelection(selection);
+    articlePrefetcher.invalidate();
+    return result;
+  });
+
+  handleIpc("onboarding:complete", async () => {
+    return siteStore.completeOnboarding();
+  });
+
+  handleIpc("sites:importChrome", async (_event, payload) => {
+    const selection = validateOnboardingSelection(payload);
+    const result = await siteStore.applyOnboardingSelection({
+      ...selection,
+      completeOnboarding: true
+    });
+    articlePrefetcher.invalidate();
+    return result;
   });
 
   handleIpc("sites:add", async (_event, payload) => {
@@ -324,6 +455,7 @@ function registerIpcHandlers() {
       height: 760,
       title: "Manual verification",
       webPreferences: {
+        session: session.defaultSession,
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true
@@ -333,6 +465,7 @@ function registerIpcHandlers() {
     attachWindowDiagnostics(verifyWindow, "verification");
     attachRendererLifecycleDiagnostics(verifyWindow, "verification");
     secureRemoteWindow(verifyWindow);
+    installVerificationGuards(verifyWindow);
     await verifyWindow.loadURL(verificationUrl);
     return true;
   });
@@ -401,6 +534,45 @@ function secureMainWindow(win) {
   win.webContents.on("will-attach-webview", (event) => {
     event.preventDefault();
   });
+}
+
+function installVerificationGuards(win) {
+  const webContentsId = win.webContents.id;
+  verificationWebContentsIds.add(webContentsId);
+  win.on("closed", () => verificationWebContentsIds.delete(webContentsId));
+  if (!verificationPermissionGuardInstalled) {
+    verificationPermissionGuardInstalled = true;
+    session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+      if (!verificationWebContentsIds.has(webContents?.id)) {
+        callback(true);
+        return;
+      }
+      callback(!DENIED_VERIFICATION_PERMISSIONS.has(permission));
+    });
+  }
+  win.webContents.on("will-redirect", (event, url) => {
+    guardRemoteNavigation(event, url);
+  });
+  win.webContents.on("will-frame-navigate", (event, url) => {
+    guardRemoteNavigation(event, url);
+  });
+}
+
+function guardRemoteNavigation(event, url) {
+  try {
+    normalizeHttpUrl(url, { label: "Navigation URL" });
+  } catch {
+    event.preventDefault();
+  }
+}
+
+function publicFolderTree(folders) {
+  return (folders || []).map((folder) => ({
+    name: folder.name,
+    path: folder.path,
+    urlCount: folder.urlCount,
+    children: publicFolderTree(folder.children)
+  }));
 }
 
 function secureRemoteWindow(win) {

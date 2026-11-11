@@ -96,13 +96,81 @@ function validateKnowledgePatch(value) {
 function validateReadingProgress(value) {
   const payload = objectValue(value, "Reading progress");
   return {
-    ...payload,
     sessionId: boundedString(payload.sessionId, { label: "Reading session ID", maxLength: 128, required: true }),
     articleUrl: normalizeHttpUrl(payload.articleUrl, { label: "Article URL" }),
     articleTitle: boundedString(payload.articleTitle, { label: "Article title", maxLength: 500 }),
     siteId: boundedString(payload.siteId, { label: "Site ID", maxLength: 512 }),
     siteTitle: boundedString(payload.siteTitle, { label: "Site title", maxLength: 300 }),
-    siteDomain: boundedString(payload.siteDomain, { label: "Site domain", maxLength: 255 })
+    siteDomain: boundedString(payload.siteDomain, { label: "Site domain", maxLength: 255 }),
+    startedAt: boundedString(payload.startedAt, { label: "Started at", maxLength: 64 }),
+    activeMs: boundedInteger(payload.activeMs, { label: "Active reading time", min: 0, max: 86_400_000, fallback: 0 }),
+    maxScrollDepth: boundedUnit(payload.maxScrollDepth, { label: "Scroll depth", fallback: 0 }),
+    bottomDwellMs: boundedInteger(payload.bottomDwellMs, { label: "Bottom dwell", min: 0, max: 3_600_000, fallback: 0 }),
+    progressPercent: boundedNumber(payload.progressPercent, { label: "Reading progress", min: 0, max: 100, fallback: 0 }),
+    anchor: validateReadingAnchor(payload.anchor)
+  };
+}
+
+function validateReadingAnchor(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const anchor = objectValue(value, "Reading anchor");
+  const kind = boundedString(anchor.kind, { label: "Anchor kind", maxLength: 32, required: true });
+  if (!["paragraph", "percentage"].includes(kind)) throw new Error("Unsupported reading anchor");
+  const result = {
+    kind,
+    progressPercent: boundedNumber(anchor.progressPercent, { label: "Anchor progress", min: 0, max: 100, fallback: 0 })
+  };
+  if (kind === "paragraph") {
+    result.paragraphIndex = boundedInteger(anchor.paragraphIndex, {
+      label: "Paragraph index",
+      min: 0,
+      max: 100_000,
+      fallback: 0
+    });
+    result.charOffset = boundedInteger(anchor.charOffset, {
+      label: "Paragraph offset",
+      min: 0,
+      max: 200_000,
+      fallback: 0
+    });
+    result.paragraphCount = boundedInteger(anchor.paragraphCount, {
+      label: "Paragraph count",
+      min: 0,
+      max: 100_000,
+      fallback: 0
+    });
+  }
+  return result;
+}
+
+function validateShelfItem(value) {
+  const payload = objectValue(value, "Shelf item");
+  return {
+    articleUrl: normalizeHttpUrl(payload.articleUrl, { label: "Article URL" }),
+    articleTitle: boundedString(payload.articleTitle, { label: "Article title", maxLength: 500 }),
+    siteId: boundedString(payload.siteId, { label: "Site ID", maxLength: 512 }),
+    siteTitle: boundedString(payload.siteTitle, { label: "Site title", maxLength: 300 }),
+    siteDomain: boundedString(payload.siteDomain, { label: "Site domain", maxLength: 255 }),
+    progressPercent: boundedNumber(payload.progressPercent, { label: "Reading progress", min: 0, max: 100, fallback: 0 }),
+    anchor: validateReadingAnchor(payload.anchor)
+  };
+}
+
+function validateOnboardingSelection(value) {
+  const payload = value === undefined ? {} : objectValue(value, "Onboarding selection");
+  const folderPaths = Array.isArray(payload.folderPaths) ? payload.folderPaths : [];
+  const packIds = Array.isArray(payload.packIds) ? payload.packIds : [];
+  return {
+    folderPaths: folderPaths.slice(0, 200).map((item) => boundedString(item, {
+      label: "Bookmark folder",
+      maxLength: 500,
+      required: true
+    })),
+    packIds: packIds.slice(0, 20).map((item) => boundedString(item, {
+      label: "Source pack",
+      maxLength: 80,
+      required: true
+    }))
   };
 }
 
@@ -192,6 +260,20 @@ function boundedInteger(value, { label = "Value", min, max, fallback } = {}) {
   return number;
 }
 
+function boundedNumber(value, { label = "Value", min, max, fallback } = {}) {
+  if ((value === undefined || value === null || value === "") && fallback !== undefined) return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < min || number > max) throw new Error(`${label} is invalid`);
+  return number;
+}
+
+function boundedUnit(value, { label = "Value", fallback = 0 } = {}) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || number > 1) throw new Error(`${label} is invalid`);
+  return number;
+}
+
 function objectValue(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   return value;
@@ -208,8 +290,11 @@ module.exports = {
   validateBypassSource,
   validateKnowledgeFilters,
   validateKnowledgePatch,
+  validateOnboardingSelection,
+  validateReadingAnchor,
   validateReadingProgress,
   validateRendererError,
+  validateShelfItem,
   validateSitePatch,
   validateSitePayload,
   validateTranslationPayload

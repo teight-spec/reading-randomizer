@@ -210,7 +210,7 @@ test("KnowledgeDatabase starts empty and completes reading only after cumulative
   assert.deepEqual(database.getStats(), { total: 0, analyzed: 0, pending: 0 });
   assert.deepEqual(
     database.db.prepare("SELECT version FROM schema_migrations ORDER BY version").all().map((row) => row.version),
-    [1, 2]
+    [1, 2, 3]
   );
   assert.equal(
     database.db.prepare("SELECT COUNT(*) AS count FROM pragma_index_list('articles') WHERE name = 'articles_site_idx'").get().count,
@@ -1010,6 +1010,450 @@ test("PolicyDecision and TransitionRecord normalize policy replay shape", () => 
   assert.equal(decision.fallbackAllowed, false);
   assert.equal(transition.policyName, "storm-policy");
   assert.equal(transition.suppressionStatus, true);
+});
+
+test("http client rejects response bodies over the configured cap", async () => {
+  const http = require("node:http");
+  const { requestText } = require("../src/main/services/httpClient");
+  const payload = "x".repeat(2048);
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end(payload);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  try {
+    await assert.rejects(
+      requestText(`http://127.0.0.1:${port}/large`, { maxBodyBytes: 128, timeoutMs: 3000 }),
+      (error) => {
+        assert.equal(error.code, "ERR_RESPONSE_TOO_LARGE");
+        assert.match(error.message, /exceeded 128 bytes/);
+        return true;
+      }
+    );
+    const ok = await requestText(`http://127.0.0.1:${port}/ok`, { maxBodyBytes: 4096, timeoutMs: 3000 });
+    assert.equal(ok.ok, true);
+    assert.equal(ok.text, payload);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("article variant discovery keeps only credential-free http(s) URLs", () => {
+  const { discoverArticleVariants } = require("../src/main/services/readerMode");
+  const html = `
+    <link rel="canonical" href="https://example.com/story">
+    <link rel="amphtml" href="https://user:secret@example.com/amp">
+    <a href="javascript:alert(1)">read more</a>
+    <a href="/continue">continue reading</a>
+    <a href="http://example.com/plain">keep reading</a>
+    <a href="https://evil.example/nope">unrelated link</a>
+  `;
+  const urls = discoverArticleVariants(html, "https://example.com/base");
+  assert.deepEqual(urls, [
+    "https://example.com/base",
+    "https://example.com/story",
+    "https://example.com/continue",
+    "http://example.com/plain"
+  ]);
+});
+
+test("reading progress validation returns only whitelisted fields", () => {
+  const { validateReadingProgress } = require("../src/main/services/inputValidation");
+  const result = validateReadingProgress({
+    sessionId: "session-1",
+    articleUrl: "https://example.com/story#part",
+    articleTitle: "Story",
+    siteId: "site-1",
+    siteTitle: "Example",
+    siteDomain: "example.com",
+    startedAt: "2026-08-08T00:00:00.000Z",
+    activeMs: 1200,
+    maxScrollDepth: 0.4,
+    bottomDwellMs: 0,
+    progressPercent: 42,
+    injected: "drop-me",
+    anchor: {
+      kind: "paragraph",
+      paragraphIndex: 2,
+      charOffset: 15,
+      paragraphCount: 8,
+      progressPercent: 42,
+      extra: "drop-me"
+    }
+  });
+  assert.equal(result.injected, undefined);
+  assert.equal(result.anchor.extra, undefined);
+  assert.equal(result.articleUrl, "https://example.com/story");
+  assert.equal(result.progressPercent, 42);
+  assert.deepEqual(result.anchor, {
+    kind: "paragraph",
+    paragraphIndex: 2,
+    charOffset: 15,
+    paragraphCount: 8,
+    progressPercent: 42
+  });
+  assert.deepEqual(Object.keys(result).sort(), [
+    "activeMs",
+    "anchor",
+    "articleTitle",
+    "articleUrl",
+    "bottomDwellMs",
+    "maxScrollDepth",
+    "progressPercent",
+    "sessionId",
+    "siteDomain",
+    "siteId",
+    "siteTitle",
+    "startedAt"
+  ]);
+});
+
+test("request blocker cancels tracker hosts without blocking article images", () => {
+  const { shouldCancelRequest } = require("../src/main/services/requestBlocker");
+  assert.equal(shouldCancelRequest({
+    url: "https://www.googletagmanager.com/gtm.js",
+    resourceType: "script"
+  }), true);
+  assert.equal(shouldCancelRequest({
+    url: "https://securepubads.g.doubleclick.net/ad.gif",
+    resourceType: "image"
+  }), true);
+  assert.equal(shouldCancelRequest({
+    url: "https://media.newyorker.com/photos/story.jpg",
+    resourceType: "image"
+  }), false);
+  assert.equal(shouldCancelRequest({
+    url: "https://www.theatlantic.com/article",
+    resourceType: "mainFrame"
+  }), false);
+  assert.equal(shouldCancelRequest({
+    url: "https://cdn.example.com/font.woff2",
+    resourceType: "font"
+  }), false);
+});
+
+test("bookmark folder selection defaults to detected legacy names and does not import them implicitly", async () => {
+  const fsSync = require("node:fs");
+  const { listChromeBookmarkFolders, readChromeBookmarks } = require("../src/main/services/bookmarks");
+  const {
+    defaultSelectedFolderPaths,
+    summarizeFolderSelection,
+    countUniqueAdditions
+  } = require("../src/renderer/onboardingSelection");
+  const { SiteStore } = require("../src/main/services/siteStore");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reader-bookmarks-"));
+  const bookmarksPath = path.join(dir, "Bookmarks");
+  fsSync.writeFileSync(bookmarksPath, JSON.stringify({
+    roots: {
+      bookmark_bar: {
+        type: "folder",
+        name: "书签栏",
+        children: [
+          {
+            type: "folder",
+            name: "English",
+            children: [
+              { type: "url", name: "A", url: "https://example.com/a" }
+            ]
+          },
+          {
+            type: "folder",
+            name: "fashion",
+            children: [{ type: "url", name: "B", url: "https://example.com/b" }]
+          },
+          {
+            type: "folder",
+            name: "literary award",
+            children: [{ type: "url", name: "C", url: "https://example.com/c" }]
+          },
+          {
+            type: "folder",
+            name: "Science",
+            children: [{ type: "url", name: "D", url: "https://example.com/d" }]
+          }
+        ]
+      }
+    }
+  }));
+  const listed = await listChromeBookmarkFolders({ bookmarksPath });
+  const selected = defaultSelectedFolderPaths(listed.folders);
+  assert.deepEqual(selected, [
+    "书签栏/English",
+    "书签栏/fashion",
+    "书签栏/literary award"
+  ]);
+  assert.deepEqual(summarizeFolderSelection(listed.folders, selected), {
+    folderCount: 3,
+    linkCount: 3
+  });
+  const implicit = await readChromeBookmarks({ bookmarksPath });
+  assert.deepEqual(implicit.sites, []);
+  assert.equal(require("../src/main/services/bookmarks").DEFAULT_TARGET_FOLDERS, undefined);
+  const store = new SiteStore(dir);
+  await store.addSite({ title: "Already", url: "https://example.com/a", folderPath: "Library" });
+  const imported = await store.applyOnboardingSelection({
+    folderPaths: selected,
+    packIds: [],
+    bookmarksPath,
+    completeOnboarding: true
+  });
+  assert.equal(imported.added, 2);
+  assert.equal(imported.duplicates, 1);
+  const tally = countUniqueAdditions(
+    ["https://example.com/a"],
+    ["https://example.com/a", "https://example.com/b", "https://example.com/b"]
+  );
+  assert.deepEqual(tally, { added: 1, duplicates: 2, accepted: ["https://example.com/b"] });
+});
+
+test("recommended source packs are the two built-in groups and import is deduped", async () => {
+  const { loadSourcePacks } = require("../src/main/services/sourcePacks");
+  const { SiteStore } = require("../src/main/services/siteStore");
+  const packs = loadSourcePacks();
+  assert.deepEqual(packs.map((pack) => pack.title), ["英文精读", "知识沉淀"]);
+  const titles = packs.flatMap((pack) => pack.sites.map((site) => site.title)).sort();
+  assert.deepEqual(titles, [
+    "Pulitzer Prizes",
+    "The Atlantic",
+    "The Economist",
+    "The Guardian",
+    "The New York Times",
+    "The New Yorker"
+  ]);
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reader-packs-"));
+  const store = new SiteStore(dir);
+  const first = await store.applyOnboardingSelection({
+    folderPaths: [],
+    packIds: packs.map((pack) => pack.id)
+  });
+  const second = await store.applyOnboardingSelection({
+    folderPaths: [],
+    packIds: packs.map((pack) => pack.id)
+  });
+  assert.equal(first.added, 6);
+  assert.equal(first.duplicates, 0);
+  assert.equal(second.added, 0);
+  assert.equal(second.duplicates, 6);
+  assert.equal((await store.listSites()).length, 6);
+});
+
+test("recent reading list keeps the newest 50 and read-later leaves when collected", async () => {
+  const { KnowledgeDatabase, RECENT_READ_LIMIT } = require("../src/main/services/knowledgeDatabase");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reader-shelf-"));
+  const database = new KnowledgeDatabase(dir);
+  for (let index = 0; index < 60; index += 1) {
+    database.touchRecent({
+      articleUrl: `https://example.com/recent/${index}`,
+      articleTitle: `Recent ${index}`,
+      siteTitle: "Example",
+      siteDomain: "example.com"
+    });
+  }
+  const recent = database.listShelf("recent");
+  assert.equal(RECENT_READ_LIMIT, 50);
+  assert.equal(recent.length, 50);
+  assert.equal(recent[0].articleTitle, "Recent 59");
+  assert.equal(recent.some((item) => item.articleTitle === "Recent 0"), false);
+  assert.equal(recent.some((item) => item.articleTitle === "Recent 10"), true);
+
+  const articleUrl = "https://example.com/later-story?utm_source=test";
+  database.saveForLater({
+    articleUrl,
+    articleTitle: "Later story",
+    siteId: "site-1",
+    siteTitle: "Example",
+    siteDomain: "example.com",
+    progressPercent: 20
+  });
+  assert.equal(database.listShelf("later").length, 1);
+  const cachedItem = {
+    site: { id: "site-1", title: "Example", domain: "example.com" },
+    article: { title: "Later story", url: articleUrl },
+    readerArticle: {
+      title: "Later story",
+      content: "<p>Collected article.</p>",
+      textContent: "Collected article. ".repeat(80)
+    }
+  };
+  const base = {
+    articleUrl,
+    articleTitle: "Later story",
+    siteId: "site-1",
+    siteTitle: "Example",
+    siteDomain: "example.com",
+    startedAt: "2026-08-08T00:00:00.000Z",
+    maxScrollDepth: 0.95,
+    bottomDwellMs: 5000,
+    progressPercent: 95
+  };
+  const incomplete = database.recordProgress({ ...base, sessionId: "later-1", activeMs: 1000 }, cachedItem);
+  assert.equal(incomplete.removedFromLater, null);
+  assert.equal(database.listShelf("later").length, 1);
+  const completed = database.recordProgress({ ...base, sessionId: "later-2", activeMs: 180_000 }, cachedItem);
+  assert.equal(completed.newlyCompleted, true);
+  assert.equal(completed.removedFromLater.articleTitle, "Later story");
+  assert.equal(database.listShelf("later").length, 0);
+  database.restoreReadLater(completed.removedFromLater);
+  const again = database.recordProgress({ ...base, sessionId: "later-3", activeMs: 1000 }, cachedItem);
+  assert.equal(again.removedFromLater, null);
+  assert.equal(database.listShelf("later").length, 1);
+  database.close();
+});
+
+test("resume prompt is offered only from 5% through 90%, with paragraph anchor fallback", async () => {
+  const { KnowledgeDatabase } = require("../src/main/services/knowledgeDatabase");
+  const { captureAnchor, isResumePromptRange, resolveRestoreTarget } = require("../src/renderer/readingAnchor");
+  assert.equal(isResumePromptRange(4), false);
+  assert.equal(isResumePromptRange(5), true);
+  assert.equal(isResumePromptRange(90), true);
+  assert.equal(isResumePromptRange(91), false);
+
+  const paragraphs = [
+    { top: 0, height: 100, textLength: 100 },
+    { top: 100, height: 200, textLength: 80 }
+  ];
+  const anchor = captureAnchor({
+    paragraphs,
+    scrollTop: 180,
+    scrollHeight: 1000,
+    clientHeight: 200
+  });
+  assert.equal(anchor.kind, "paragraph");
+  assert.equal(anchor.paragraphIndex, 1);
+  assert.equal(anchor.charOffset, 32);
+  assert.equal(anchor.progressPercent, 23);
+  const restored = resolveRestoreTarget({
+    paragraphs,
+    scrollHeight: 1000,
+    clientHeight: 200
+  }, anchor);
+  assert.equal(restored.mode, "paragraph");
+  assert.equal(restored.paragraphIndex, 1);
+  assert.equal(restored.scrollTop, 180);
+  const fallback = resolveRestoreTarget({
+    paragraphs: [{ top: 0, height: 40, textLength: 10 }],
+    scrollHeight: 1000,
+    clientHeight: 200
+  }, anchor);
+  assert.equal(fallback.mode, "percentage");
+  assert.equal(fallback.scrollTop, Math.round(800 * (anchor.progressPercent / 100)));
+  const noParagraphs = captureAnchor({
+    paragraphs: [],
+    scrollTop: 400,
+    scrollHeight: 1000,
+    clientHeight: 200
+  });
+  assert.equal(noParagraphs.kind, "percentage");
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reader-resume-"));
+  const database = new KnowledgeDatabase(dir);
+  const base = {
+    articleUrl: "https://example.com/resume",
+    articleTitle: "Resume story",
+    siteId: "site-1",
+    siteTitle: "Example",
+    siteDomain: "example.com",
+    startedAt: "2026-08-08T00:00:00.000Z",
+    activeMs: 1000,
+    maxScrollDepth: 0.3,
+    bottomDwellMs: 0
+  };
+  database.recordProgress({
+    ...base,
+    sessionId: "resume-low",
+    progressPercent: 42,
+    anchor
+  });
+  assert.equal(database.getResumeOffer().progressPercent, 42);
+  assert.equal(database.getResumeOffer().anchor.kind, "paragraph");
+  database.recordProgress({
+    ...base,
+    articleUrl: "https://example.com/other",
+    articleTitle: "Too far",
+    sessionId: "resume-high",
+    progressPercent: 96
+  });
+  assert.equal(database.getResumeOffer(), null);
+  database.close();
+});
+
+test("reader shortcuts stay gated to the visible reader, and shelf time and continue tags stay explicit", () => {
+  const { formatShelfTime, isReaderShortcutEnabled, shouldShowContinueTag } = require("../src/renderer/readingAnchor");
+  const visible = {
+    readerVisible: true,
+    libraryOpen: false,
+    shelfOpen: false,
+    onboardingOpen: false,
+    knowledgeOpen: false
+  };
+  assert.equal(isReaderShortcutEnabled(visible), true);
+  assert.equal(isReaderShortcutEnabled({ ...visible, readerVisible: false }), false);
+  assert.equal(isReaderShortcutEnabled({ ...visible, libraryOpen: true }), false);
+  assert.equal(isReaderShortcutEnabled({ ...visible, shelfOpen: true }), false);
+  assert.equal(isReaderShortcutEnabled({ ...visible, onboardingOpen: true }), false);
+  assert.equal(isReaderShortcutEnabled({ ...visible, knowledgeOpen: true }), false);
+
+  const now = new Date(2026, 10, 11, 18, 0, 0).getTime();
+  assert.equal(formatShelfTime(new Date(2026, 10, 11, 13, 40, 0).toISOString(), now), "今天 13:40");
+  assert.equal(formatShelfTime(new Date(2026, 10, 10, 9, 0, 0).toISOString(), now), "昨天");
+  assert.equal(formatShelfTime(new Date(2026, 10, 8, 9, 0, 0).toISOString(), now), "11月08日");
+  assert.equal(formatShelfTime("not-a-date", now), "");
+
+  assert.equal(shouldShowContinueTag({ progressPercent: 42, collected: false }), true);
+  assert.equal(shouldShowContinueTag({ progressPercent: 5, collected: false }), true);
+  assert.equal(shouldShowContinueTag({ progressPercent: 90, collected: false }), true);
+  assert.equal(shouldShowContinueTag({ progressPercent: 4, collected: false }), false);
+  assert.equal(shouldShowContinueTag({ progressPercent: 91, collected: false }), false);
+  assert.equal(shouldShowContinueTag({ progressPercent: 42, collected: true }), false);
+});
+
+test("opening a saved article does not increase the knowledge issue count", async () => {
+  const { KnowledgeDatabase } = require("../src/main/services/knowledgeDatabase");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reader-open-saved-"));
+  const database = new KnowledgeDatabase(dir);
+  const before = database.getStats().total;
+  database.saveForLater({
+    articleUrl: "https://example.com/saved",
+    articleTitle: "Saved",
+    siteTitle: "Example",
+    siteDomain: "example.com",
+    progressPercent: 40
+  });
+  database.touchRecent({
+    articleUrl: "https://example.com/saved",
+    articleTitle: "Saved",
+    siteTitle: "Example",
+    siteDomain: "example.com",
+    progressPercent: 40
+  });
+  assert.equal(database.getStats().total, before);
+  assert.equal(database.listShelf("recent").length, 1);
+  database.close();
+});
+
+test("secure storage availability follows safeStorage.isEncryptionAvailable", () => {
+  const { SecureSettingsStore } = require("../src/main/services/secureSettingsStore");
+  const calls = [];
+  const store = new SecureSettingsStore("/tmp/unused-reader-settings", {
+    safeStorage: {
+      encryptString: () => Buffer.from("x"),
+      decryptString: () => "x",
+      isEncryptionAvailable: () => {
+        calls.push("checked");
+        return false;
+      }
+    }
+  });
+  assert.equal(store.canEncrypt(), false);
+  assert.deepEqual(calls, ["checked"]);
+  const fallback = new SecureSettingsStore("/tmp/unused-reader-settings", {
+    safeStorage: {
+      encryptString: () => Buffer.from("x"),
+      decryptString: () => "x"
+    }
+  });
+  assert.equal(fallback.canEncrypt(), ["darwin", "win32"].includes(process.platform));
 });
 
 test("StormPolicy returns explicit suppress policy decision", () => {
