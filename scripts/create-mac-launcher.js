@@ -3,11 +3,11 @@ const path = require("node:path");
 const os = require("node:os");
 
 const projectRoot = path.resolve(__dirname, "..");
-const appPath = path.join(os.homedir(), "Desktop", "Reading Randomizer.app");
+const appPath = path.join(os.homedir(), "Desktop", "随阅.app");
 const contentsPath = path.join(appPath, "Contents");
 const macosPath = path.join(contentsPath, "MacOS");
 const resourcesPath = path.join(contentsPath, "Resources");
-const executablePath = path.join(macosPath, "Reading Randomizer");
+const executablePath = path.join(macosPath, "随阅");
 const iconSourcePath = path.join(projectRoot, "assets", "app-icon.icns");
 const iconTargetPath = path.join(resourcesPath, "app-icon.icns");
 
@@ -30,9 +30,9 @@ function infoPlist() {
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>Reading Randomizer</string>
+  <string>随阅</string>
   <key>CFBundleExecutable</key>
-  <string>Reading Randomizer</string>
+  <string>随阅</string>
   <key>CFBundleIconFile</key>
   <string>app-icon</string>
   <key>CFBundleIdentifier</key>
@@ -40,7 +40,7 @@ function infoPlist() {
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>Reading Randomizer</string>
+  <string>随阅</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -60,7 +60,7 @@ function launcherScript() {
   return `#!/bin/zsh
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 cd "${projectRoot}" || exit 1
-exec npm run start
+exec zsh "${projectRoot}/scripts/start-isolated.sh"
 `;
 }
 

@@ -1,6 +1,10 @@
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { app, BrowserWindow, ipcMain, safeStorage, session, shell } = require("electron");
+const APP_DISPLAY_NAME = "随阅";
+if (typeof app.setName === "function") {
+  app.setName(APP_DISPLAY_NAME);
+}
 const { HistoryStore } = require("./services/historyStore");
 const { inspectArticle } = require("./services/articlePicker");
 const { Translator } = require("./services/translator");
@@ -701,6 +705,7 @@ function applyAppIcon() {
     platform: process.platform,
     iconAsset,
     applied,
-    failure
+    failure,
+    appName: typeof app.getName === "function" ? app.getName() : null
   });
 }

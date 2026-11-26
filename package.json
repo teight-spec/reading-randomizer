@@ -1,5 +1,6 @@
 {
   "name": "reading-randomizer",
+  "productName": "随阅",
   "version": "0.1.0",
   "private": true,
   "description": "Reading-first desktop app with source rotation, translation, and a local knowledge library.",
@@ -7,6 +8,7 @@
   "main": "src/main/main.js",
   "scripts": {
     "dev": "electron .",
+    "start:isolated": "zsh scripts/start-isolated.sh",
     "start": "electron .",
     "check": "node scripts/smoke-check.js",
     "test": "node scripts/run-tests.js",
@@ -14,6 +16,7 @@
     "pack:mac": "electron-builder --mac dir --publish never",
     "dist:mac": "electron-builder --mac dmg zip --publish never",
     "launcher:mac": "node scripts/create-mac-launcher.js",
+    "postinstall": "node scripts/ensure-suiyue-electron-bundle.js",
     "audit:library": "electron scripts/audit-library.js",
     "health:report": "electron scripts/health-report.js",
     "health:runtime": "node scripts/runtime-health-report.js"
