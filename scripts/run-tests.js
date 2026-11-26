@@ -1469,6 +1469,156 @@ test("StormPolicy returns explicit suppress policy decision", () => {
   assert.equal(decision.policyDecision.suppressionApplied, true);
 });
 
+
+test("paywall detector treats header subscribe copy as no paywall (local fixture, not a live site)", async () => {
+  const { detectPaywallFromPage } = require("../src/main/services/paywallDetection");
+  const html = await fs.readFile(path.join(__dirname, "../tests/fixtures/newyorker-longform.html"), "utf8");
+  const detection = detectPaywallFromPage({ html, status: 200 });
+  assert.equal(detection.paywalled, false);
+  assert.equal(detection.outcome, "no_paywall");
+  assert.equal(detection.target, "original");
+  assert.equal(detection.evidence, "missing_payment_requirement_or_unblocked_body");
+});
+
+test("paywall detector requires a hard paywall element, not subscription keywords (local fixture, not a live site)", async () => {
+  const { detectPaywallFromPage } = require("../src/main/services/paywallDetection");
+  const html = await fs.readFile(path.join(__dirname, "../tests/fixtures/economist-archive.html"), "utf8");
+  const detection = detectPaywallFromPage({ html, status: 200 });
+  assert.equal(detection.paywalled, true);
+  assert.equal(detection.outcome, "paywall");
+  assert.equal(detection.target, "mirror");
+  assert.match(detection.evidence, /payment:article_access_requires_payment_or_subscription/);
+  assert.match(detection.evidence, /blocked:short_visible_teaser_with_blocking_overlay/);
+});
+
+test("timeout, 403, captcha and login walls are not treated as paywalls", async () => {
+  const { detectPaywallFromPage, decidePaywallAction } = require("../src/main/services/paywallDetection");
+  const timeout = detectPaywallFromPage({ error: { kind: "timeout", message: "request timed out" } });
+  assert.equal(timeout.paywalled, false);
+  assert.equal(timeout.outcome, "original_failure");
+  assert.equal(timeout.reason, "timeout");
+
+  const forbidden = detectPaywallFromPage({
+    status: 403,
+    html: "<html><body><h1>Subscribe to continue</h1><p>Access denied</p></body></html>"
+  });
+  assert.equal(forbidden.paywalled, false);
+  assert.equal(forbidden.outcome, "original_failure");
+  assert.equal(forbidden.reason, "http_403");
+
+  const captchaHtml = await fs.readFile(path.join(__dirname, "../tests/fixtures/paywall-captcha-stub.html"), "utf8");
+  const captcha = detectPaywallFromPage({ html: captchaHtml, status: 200 });
+  assert.equal(captcha.paywalled, false);
+  assert.equal(captcha.outcome, "unknown_failure");
+  assert.equal(captcha.reason, "captcha");
+
+  const loginHtml = await fs.readFile(path.join(__dirname, "../tests/fixtures/paywall-login-stub.html"), "utf8");
+  const login = detectPaywallFromPage({ html: loginHtml, status: 200 });
+  assert.equal(login.paywalled, false);
+  assert.equal(login.outcome, "unknown_failure");
+  assert.equal(login.reason, "login_wall");
+
+  const openOriginal = decidePaywallAction(timeout, { mirrorConfigured: true, firstMirror: { name: "stub" } });
+  assert.equal(openOriginal.action, "report_original_or_unknown_failure");
+  assert.equal(openOriginal.retry, false);
+});
+
+test("confirmed paywall opens the first configured mirror once and does not retry a loop", () => {
+  const { decidePaywallAction } = require("../src/main/services/paywallDetection");
+  const detection = {
+    paywalled: true,
+    outcome: "paywall",
+    reason: "hard_paywall_element",
+    evidence: "element:div.paywall",
+    target: "mirror"
+  };
+  const opened = decidePaywallAction(detection, { mirrorConfigured: true, firstMirror: { name: "local-stub-mirror" } });
+  assert.equal(opened.action, "open_mirror_once");
+  assert.equal(opened.retry, false);
+  const missing = decidePaywallAction(detection, { mirrorConfigured: false, firstMirror: null });
+  assert.equal(missing.action, "paywall_without_mirror");
+  assert.equal(missing.retry, false);
+  const clear = decidePaywallAction({ paywalled: false, outcome: "no_paywall" }, { mirrorConfigured: true, firstMirror: { name: "local-stub-mirror" } });
+  assert.equal(clear.action, "open_original");
+});
+
+
+test("registration wall and ordinary subscribe promo are not treated as paywalls (local fixtures, not live sites)", async () => {
+  const { detectPaywallFromPage } = require("../src/main/services/paywallDetection");
+  const registration = detectPaywallFromPage({
+    html: await fs.readFile(path.join(__dirname, "../tests/fixtures/paywall-registration-stub.html"), "utf8"),
+    status: 200
+  });
+  assert.equal(registration.paywalled, false);
+  assert.equal(registration.outcome, "unknown_failure");
+  assert.equal(registration.reason, "registration_wall");
+  assert.equal(registration.target, "original");
+
+  const ordinary = detectPaywallFromPage({
+    html: await fs.readFile(path.join(__dirname, "../tests/fixtures/paywall-ordinary-subscribe-promo.html"), "utf8"),
+    status: 200
+  });
+  assert.equal(ordinary.paywalled, false);
+  assert.equal(ordinary.outcome, "no_paywall");
+  assert.equal(ordinary.target, "original");
+});
+
+
+test("paywall-class node without a blocked body does not count as a paywall (local fixture, not a live site)", async () => {
+  const { detectPaywallFromPage, decidePaywallAction } = require("../src/main/services/paywallDetection");
+  const html = await fs.readFile(path.join(__dirname, "../tests/fixtures/paywall-node-unblocked.html"), "utf8");
+  const detection = detectPaywallFromPage({ html, status: 200 });
+  assert.equal(detection.paywalled, false);
+  assert.equal(detection.outcome, "no_paywall");
+  assert.equal(detection.target, "original");
+  const action = decidePaywallAction(detection, { mirrorConfigured: true, firstMirror: { name: "local-stub-mirror" } });
+  assert.equal(action.action, "open_original");
+  assert.equal(action.retry, false);
+});
+
+test("registration wall is unknown and does not auto-open a mirror (local fixture, not a live site)", async () => {
+  const { detectPaywallFromPage, decidePaywallAction } = require("../src/main/services/paywallDetection");
+  const html = await fs.readFile(path.join(__dirname, "../tests/fixtures/paywall-registration-stub.html"), "utf8");
+  const detection = detectPaywallFromPage({ html, status: 200 });
+  assert.equal(detection.paywalled, false);
+  assert.equal(detection.outcome, "unknown_failure");
+  assert.equal(detection.reason, "registration_wall");
+  assert.equal(detection.target, "original");
+  const action = decidePaywallAction(detection, { mirrorConfigured: true, firstMirror: { name: "local-stub-mirror" } });
+  assert.equal(action.action, "report_original_or_unknown_failure");
+  assert.equal(action.retry, false);
+});
+
+test("payment requirement plus actually blocked body is a paywall (local fixture, not a live site)", async () => {
+  const { detectPaywallFromPage, decidePaywallAction } = require("../src/main/services/paywallDetection");
+  const html = await fs.readFile(path.join(__dirname, "../tests/fixtures/paywall-payment-blocked.html"), "utf8");
+  const detection = detectPaywallFromPage({ html, status: 200 });
+  assert.equal(detection.paywalled, true);
+  assert.equal(detection.outcome, "paywall");
+  assert.equal(detection.reason, "payment_requirement_and_blocked_body");
+  assert.match(detection.evidence, /payment:article_access_requires_payment_or_subscription/);
+  assert.match(detection.evidence, /blocked:remaining_article_hidden/);
+  assert.equal(detection.target, "mirror");
+  const action = decidePaywallAction(detection, { mirrorConfigured: true, firstMirror: { name: "local-stub-mirror" } });
+  assert.equal(action.action, "open_mirror_once");
+  assert.equal(action.retry, false);
+});
+
+test("unpackaged dock icon uses the existing packaged app-icon asset", () => {
+  const fsSync = require("node:fs");
+  const iconPng = path.join(__dirname, "../assets/app-icon-1024.png");
+  const iconIcns = path.join(__dirname, "../assets/app-icon.icns");
+  const sourcePng = path.join(__dirname, "../assets/source/app-icon-a-page-bookmark.png");
+  assert.equal(fsSync.existsSync(iconPng), true);
+  assert.equal(fsSync.existsSync(iconIcns), true);
+  assert.equal(fsSync.existsSync(sourcePng), true);
+  const main = fsSync.readFileSync(path.join(__dirname, "../src/main/main.js"), "utf8");
+  assert.match(main, /app\.dock\.setIcon/);
+  assert.match(main, /assets\/app-icon-1024\.png/);
+});
+
+require("./quick-translate-panel-tests")({ test, fs, path, assert });
+
 (async () => {
   for (const item of tests) {
     await item.fn();

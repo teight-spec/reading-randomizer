@@ -159,6 +159,7 @@ app.whenReady().then(() => {
   registerIpcHandlers();
   articlePrefetcher.start();
   knowledgeAnalysisQueue.start();
+  applyAppIcon();
   createWindow();
 
   app.on("activate", () => {
@@ -679,4 +680,27 @@ function logRuntime(event, payload = {}) {
 
 function shouldPersistRuntimeEvent(event) {
   return /failed|error|exception|rejection|unresponsive|process_gone|renderer_reported_error/.test(String(event));
+}
+
+function applyAppIcon() {
+  const iconAsset = "assets/app-icon-1024.png";
+  const iconPng = path.join(__dirname, "../../", iconAsset);
+  let applied = false;
+  let failure = null;
+  if (process.platform === "darwin" && app.dock && typeof app.dock.setIcon === "function") {
+    try {
+      app.dock.setIcon(iconPng);
+      applied = true;
+    } catch (error) {
+      failure = error.message || String(error);
+    }
+  } else {
+    failure = "dock_api_unavailable";
+  }
+  logRuntime("dock_icon_applied", {
+    platform: process.platform,
+    iconAsset,
+    applied,
+    failure
+  });
 }

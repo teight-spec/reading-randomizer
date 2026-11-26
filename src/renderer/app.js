@@ -27,6 +27,12 @@ const state = {
     capturedAt: 0
   },
   selectionTimer: null,
+  lastSelectionInput: null,
+  translateGeneration: 0,
+  activeTranslateToken: null,
+  quickTranslateClosed: true,
+  ignoredSelectionKey: "",
+  ignoreSelectionUntilEmpty: false,
   toastTimer: null,
   preferenceSaveTimer: null,
   eventsBound: false,
@@ -166,6 +172,7 @@ const SelectionService = {
       return liveSnapshot;
     }
 
+    if (state.quickTranslateClosed || elements.quickTranslate?.classList.contains("hidden")) return null;
     const text = (state.lastSelection.text || "").trim();
     if (!text || state.lastSelection.articleId !== getCurrentArticleId()) return null;
     return {
@@ -238,7 +245,7 @@ const SelectionService = {
 };
 
 const TranslationService = {
-  async translate({ text = "", direction = "auto", cacheKey = "", source = "manual" } = {}) {
+  async translate({ text = "", direction = "auto", cacheKey = "", source = "manual", token = null } = {}) {
     const snapshot = SelectionService.getTextSnapshot(text, direction);
     if (!snapshot?.text || snapshot.text.length < 2) {
       const message = "请先选择需要翻译的文本。";
@@ -262,6 +269,9 @@ const TranslationService = {
         ...state.translationCache.get(key),
         cached: true
       };
+      if (token && !isCurrentTranslateToken(token)) {
+        return { ...result, stale: true };
+      }
       setTranslationState(TRANSLATION_STATES.SUCCESS, {
         event: "translate_request_success",
         source,
@@ -307,7 +317,7 @@ const TranslationService = {
           articleId: getCurrentArticleId(),
           selectionKey: key
         });
-        if (requestId !== state.translateRequestId) {
+        if ((token && !isCurrentTranslateToken(token)) || requestId !== state.translateRequestId) {
           return {
             ...result,
             stale: true
@@ -432,6 +442,9 @@ function bindEvents() {
     if (event.target.closest("button")) return;
     armResumeTimer();
   });
+  document.addEventListener("pointerdown", recordQuickTranslateInput, true);
+  document.addEventListener("pointerup", recordQuickTranslateInput, true);
+  document.addEventListener("keyup", recordQuickTranslateInput, true);
   document.addEventListener("selectionchange", handleSelectionChange);
   document.addEventListener("keyup", handleReaderSelectionEvent);
   document.addEventListener("pointerup", handleReaderSelectionEvent);
@@ -485,7 +498,7 @@ function handleDocumentClick(event) {
   if (button === elements.fontPlusButton) adjustReaderFont(1);
   if (button === elements.widthMinusButton) adjustReaderWidth(-80);
   if (button === elements.widthPlusButton) adjustReaderWidth(80);
-  if (button === elements.closeQuickTranslateButton) closeQuickTranslate();
+  if (button === elements.closeQuickTranslateButton) closeQuickTranslate({ explicit: true });
   if (button === elements.pinTranslateButton) toggleTranslatePin();
 
   if (button.dataset.libraryFolder !== undefined) {
@@ -550,13 +563,66 @@ function handleDocumentSubmit(event) {
 }
 
 function handleReaderSelectionEvent(event) {
+  if (isInsideQuickTranslate(event.target)) return;
   if (elements.readerModeView.contains(event.target)) {
-    if (SelectionService.capture()) scheduleSelectionTranslation();
+    if (SelectionService.capture()) maybeScheduleCapturedSelection();
+    else {
+      state.ignoreSelectionUntilEmpty = false;
+      state.ignoredSelectionKey = "";
+      maybeAutoRetractQuickTranslate();
+    }
   }
 }
 
 function handleSelectionChange() {
-  if (SelectionService.capture()) scheduleSelectionTranslation();
+  if (SelectionService.capture()) {
+    maybeScheduleCapturedSelection();
+    return;
+  }
+  state.ignoreSelectionUntilEmpty = false;
+  state.ignoredSelectionKey = "";
+  maybeAutoRetractQuickTranslate();
+}
+
+function maybeScheduleCapturedSelection() {
+  const snapshot = SelectionService.getSnapshot();
+  if (!snapshot) return;
+  if (state.ignoreSelectionUntilEmpty && snapshot.key === state.ignoredSelectionKey) return;
+  state.ignoreSelectionUntilEmpty = false;
+  state.ignoredSelectionKey = "";
+  scheduleSelectionTranslation();
+}
+
+function isInsideQuickTranslate(target) {
+  return Boolean(target && elements.quickTranslate && elements.quickTranslate.contains(target));
+}
+
+function isInsideReaderBody(target) {
+  if (!target || isInsideQuickTranslate(target)) return false;
+  return Boolean(elements.readerArticle?.contains(target) || elements.readerModeView?.contains(target));
+}
+
+function recordQuickTranslateInput(event) {
+  state.lastSelectionInput = {
+    type: event.type,
+    isPanel: isInsideQuickTranslate(event.target),
+    isBody: isInsideReaderBody(event.target),
+    isPointer: event.type === "pointerdown" || event.type === "pointerup",
+    isKey: event.type === "keyup" || event.type === "keydown",
+    at: Date.now()
+  };
+}
+
+function isExplicitBodyClearInput() {
+  const input = state.lastSelectionInput;
+  if (!input || input.isPanel || !input.isBody) return false;
+  return input.isPointer || input.isKey;
+}
+
+function maybeAutoRetractQuickTranslate() {
+  if (state.translatePinned) return;
+  if (!isExplicitBodyClearInput()) return;
+  closeQuickTranslate({ explicit: false });
 }
 
 async function loadNextReading() {
@@ -593,7 +659,7 @@ async function loadNextReading() {
       showReader();
       setStatus("已找到文章，但阅读模式解析失败；你仍可查看原文。");
     }
-    await inspectPaywall(false);
+    await inspectPaywall();
   } catch (error) {
     setStatus(`挑选文章失败：${error.message}`);
   } finally {
@@ -662,40 +728,53 @@ function renderReadingProgress(progress) {
   ].join(" · ");
 }
 
-async function inspectPaywall(openIfPaywalled) {
+async function inspectPaywall() {
   if (!state.currentArticle?.url) return;
 
   try {
     const result = await window.readerApi.inspectArticle(state.currentArticle.url);
     state.bypassUrls = result.bypassUrls || [];
-    if (result.paywalled && openIfPaywalled) {
-      openNextBypass();
+    state.paywallDetection = result;
+    if (result.paywalled && result.outcome === "paywall") {
+      renderReaderNotice("");
+      await openConfiguredMirrorOnce();
       return;
     }
-    if (result.paywalled) {
-      renderReaderNotice("这篇文章可能有付费墙。");
-      setStatus("这篇文章可能有付费墙。");
+    if (result.outcome === "no_paywall") {
+      renderReaderNotice("");
+      return;
     }
+    const reason = result.reason || result.outcome || "unknown";
+    setStatus(result.outcome === "original_failure"
+      ? `原文未能打开（${reason}），未当作付费墙，也未改开镜像。`
+      : `未能确认是否有付费墙（${reason}），仍显示原文，未改开镜像。`);
   } catch (error) {
-    setStatus(`付费墙检测失败：${error.message}`);
+    setStatus(`原文检测失败：${error.message}。未当作付费墙，也未改开镜像。`);
+  }
+}
+
+async function openConfiguredMirrorOnce() {
+  if (!state.currentArticle?.url) return;
+  if (state.mirrorOpenAttemptedFor === state.currentArticle.url) {
+    setStatus("已尝试为这篇文章打开镜像，不再自动重试。");
+    return;
+  }
+  const first = (state.bypassUrls || []).find((source) => source?.url) || null;
+  if (!first) {
+    setStatus("检测到付费墙，但没有可用的镜像来源，未打开镜像。");
+    return;
+  }
+  state.mirrorOpenAttemptedFor = state.currentArticle.url;
+  try {
+    await window.readerApi.openExternalArticle(first.url);
+    setStatus(`已请求用镜像打开（${first.name || "镜像"}）。镜像页是否成功加载未在本地验证。`);
+  } catch (error) {
+    setStatus(`镜像打开失败：${error.message}。这不是原文失败，也不会自动改试其他镜像。`);
   }
 }
 
 async function openNextBypass() {
-  if (!state.currentArticle?.url) return;
-  if (!state.bypassUrls.length) {
-    const result = await window.readerApi.inspectArticle(state.currentArticle.url);
-    state.bypassUrls = result.bypassUrls || [];
-  }
-
-  const next = state.bypassUrls.shift();
-  if (!next) {
-    setStatus("没有可用的镜像来源。");
-    return;
-  }
-
-  await window.readerApi.openExternalArticle(next.url);
-  setStatus(`已通过外部浏览器打开镜像：${next.name}`);
+  await openConfiguredMirrorOnce();
 }
 
 async function openOriginal() {
@@ -727,9 +806,11 @@ async function enterReaderMode() {
 }
 
 function renderReaderArticle(article, resume = null) {
-  state.lastSelectionKey = "";
-  SelectionService.reset();
-  if (!state.translatePinned) closeQuickTranslate();
+  invalidateTranslateContext();
+  if (!state.translatePinned) {
+    state.quickTranslateClosed = true;
+    elements.quickTranslate.classList.add("hidden");
+  }
   const hostname = new URL(article.url).hostname.replace(/^www\./, "");
   const readingMinutes = estimateReadingMinutes(article.textContent || "");
   resetReaderScroll();
@@ -775,9 +856,11 @@ async function openReaderLinkExternally(event) {
 
 function renderReaderFailure(errorMessage) {
   window.ReaderProgressTracker?.stop();
-  state.lastSelectionKey = "";
-  SelectionService.reset();
-  if (!state.translatePinned) closeQuickTranslate();
+  invalidateTranslateContext();
+  if (!state.translatePinned) {
+    state.quickTranslateClosed = true;
+    elements.quickTranslate.classList.add("hidden");
+  }
   resetReaderScroll();
   elements.readerArticle.innerHTML = `
     <div class="article-eyebrow">今日精选</div>
@@ -798,7 +881,7 @@ function renderReaderNotice(message) {
   if (!message) return;
   const notice = document.createElement("div");
   notice.className = "reader-notice";
-  notice.innerHTML = `<p>${escapeHtml(message)}</p>${mirrorActionHtml()}`;
+  notice.innerHTML = `<p>${escapeHtml(message)}</p>`;
   elements.readerArticle.prepend(notice);
 }
 
@@ -892,7 +975,6 @@ async function handleSelectionTranslation() {
       source: "quick",
       articleId: getCurrentArticleId()
     });
-    if (!state.translatePinned) closeQuickTranslate();
     return;
   }
 
@@ -900,12 +982,15 @@ async function handleSelectionTranslation() {
     return;
   }
   state.lastSelectionKey = snapshot.key;
+  const token = beginTranslateToken(snapshot);
 
   if (!state.translationConsent) {
+    if (!isCurrentTranslateToken(token)) return;
     showQuickTranslate(snapshot.text, "远程划词翻译尚未启用。可在“设置 → 隐私与 AI”中阅读说明并开启。");
     return;
   }
 
+  if (!isCurrentTranslateToken(token)) return;
   showQuickTranslate(snapshot.text, snapshot.truncated ? "正在翻译前 4500 个字符…" : "正在翻译…");
 
   try {
@@ -913,9 +998,10 @@ async function handleSelectionTranslation() {
       text: snapshot.text,
       direction: "auto",
       cacheKey: snapshot.key,
-      source: "quick"
+      source: "quick",
+      token
     });
-    if (result.stale) return;
+    if (result.stale || !isCurrentTranslateToken(token)) return;
     if (result.error) {
       elements.quickTranslateResult.textContent = "翻译服务暂时不可用。";
       showToast(result.translatedText);
@@ -923,9 +1009,39 @@ async function handleSelectionTranslation() {
     }
     elements.quickTranslateResult.textContent = result.translatedText + (result.cached ? "\n\n（来自缓存）" : "");
   } catch (error) {
+    if (!isCurrentTranslateToken(token)) return;
     elements.quickTranslateResult.textContent = "翻译服务暂时不可用。";
     showToast(error.message);
   }
+}
+
+function beginTranslateToken(snapshot) {
+  const token = {
+    generation: ++state.translateGeneration,
+    articleId: getCurrentArticleId(),
+    selectionKey: snapshot.key
+  };
+  state.activeTranslateToken = token;
+  state.quickTranslateClosed = false;
+  return token;
+}
+
+function isCurrentTranslateToken(token) {
+  const active = state.activeTranslateToken;
+  if (!token || !active || state.quickTranslateClosed) return false;
+  return token.generation === active.generation
+    && token.articleId === active.articleId
+    && token.selectionKey === active.selectionKey
+    && token.articleId === getCurrentArticleId();
+}
+
+function invalidateTranslateContext() {
+  clearTimeout(state.selectionTimer);
+  state.selectionTimer = null;
+  state.translateGeneration += 1;
+  state.activeTranslateToken = null;
+  state.lastSelectionKey = "";
+  SelectionService.reset();
 }
 
 function getTranslationCacheKey(text, direction) {
@@ -937,16 +1053,27 @@ function getCurrentArticleId() {
 }
 
 function showQuickTranslate(sourceText, resultText) {
+  if (state.quickTranslateClosed) return;
   elements.quickTranslateSource.textContent = sourceText;
   elements.quickTranslateResult.textContent = resultText;
   elements.quickTranslate.classList.toggle("loading", /翻译|translating/i.test(resultText));
   elements.quickTranslate.classList.remove("hidden");
 }
 
-function closeQuickTranslate() {
-  if (state.translatePinned) return;
+function closeQuickTranslate(options = {}) {
+  const explicit = options.explicit === true;
+  if (!explicit && state.translatePinned) return;
+  if (explicit) {
+    state.translatePinned = false;
+    elements.quickTranslate.classList.remove("pinned");
+    if (elements.pinTranslateButton) elements.pinTranslateButton.textContent = "固定";
+  }
+  const live = SelectionService.readLiveSelection();
+  state.ignoredSelectionKey = live?.key || state.lastSelectionKey || "";
+  state.ignoreSelectionUntilEmpty = Boolean(state.ignoredSelectionKey);
+  invalidateTranslateContext();
+  state.quickTranslateClosed = true;
   elements.quickTranslate.classList.add("hidden");
-  state.lastSelectionKey = "";
 }
 
 function toggleTranslatePin() {
@@ -956,11 +1083,7 @@ function toggleTranslatePin() {
 }
 
 function forceCloseQuickTranslate() {
-  state.translatePinned = false;
-  elements.quickTranslate.classList.remove("pinned");
-  elements.quickTranslate.classList.add("hidden");
-  elements.pinTranslateButton.textContent = "固定";
-  state.lastSelectionKey = "";
+  closeQuickTranslate({ explicit: true });
 }
 
 async function refreshSites() {
@@ -1187,7 +1310,7 @@ async function loadSiteReading(siteId) {
       renderReaderFailure(localizeReadingError(result.readerError, "阅读模式暂时无法解析这篇文章。"));
       showReader();
     }
-    await inspectPaywall(false);
+    await inspectPaywall();
   } finally {
     setBusy(false);
   }
@@ -1680,7 +1803,7 @@ async function openSavedArticle(url) {
     renderReaderArticle(result.readerArticle, result.resume);
     showReader();
     await refreshShelf();
-    await inspectPaywall(false);
+    await inspectPaywall();
   } finally {
     setBusy(false);
   }

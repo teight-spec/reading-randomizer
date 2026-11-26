@@ -6,19 +6,10 @@ const archiveRequests = createRequestGovernance({
   maxRetries: 1
 });
 
-const PAYWALL_PATTERNS = [
-  /subscribe to continue/i,
-  /subscription required/i,
-  /sign in to continue/i,
-  /create an account to continue/i,
-  /already a subscriber/i,
-  /this article is for subscribers/i,
-  /to continue reading/i,
-  /paywall/i
-];
+const { detectPaywallFromPage } = require("./paywallDetection");
 
 function looksPaywalled(htmlOrText = "") {
-  return PAYWALL_PATTERNS.some((pattern) => pattern.test(htmlOrText));
+  return detectPaywallFromPage({ html: htmlOrText, status: 200 }).paywalled;
 }
 
 function makeArchiveUrl(url) {
