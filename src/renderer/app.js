@@ -410,6 +410,7 @@ async function boot() {
     },
     setStatus: showToast
   });
+  configureReadingLoopView();
   bindEvents();
   await refreshSites();
   await refreshCacheUsage();
@@ -422,12 +423,7 @@ async function boot() {
     showOnboarding(onboarding, "first-run");
     return;
   }
-  const offer = await window.readerApi.getResumeOffer?.();
-  if (offer && window.ReadingAnchor?.isResumePromptRange?.(offer.progressPercent)) {
-    showResumePrompt(offer);
-    return;
-  }
-  await loadNextReading();
+  await startReadingLoop();
 }
 
 function bindEvents() {
@@ -462,8 +458,8 @@ function handleDocumentClick(event) {
     return;
   }
 
-  if (button === elements.nextButton) runAction("reading:next", loadNextReading);
-  if (button === elements.saveAndNextButton) runAction("reading:saveAndNext", saveCurrentAndNext);
+  if (button === elements.nextButton) runAction("reading:skip", requestLoopSkip);
+  if (button === elements.saveAndNextButton) runAction("reading:saveAndSkip", saveCurrentAndSkip);
   if (button === elements.readLaterButton) runAction("reading:saveLater", toggleReadLater);
   if (button === elements.todayButton) showReader();
   if (button === elements.libraryButton) runAction("library:open", openLibraryView);
@@ -500,6 +496,7 @@ function handleDocumentClick(event) {
   if (button === elements.widthPlusButton) adjustReaderWidth(80);
   if (button === elements.closeQuickTranslateButton) closeQuickTranslate({ explicit: true });
   if (button === elements.pinTranslateButton) toggleTranslatePin();
+  if (button && button.id === "readingMarkSave") runAction("reading:saveMark", saveReadingMark);
 
   if (button.dataset.libraryFolder !== undefined) {
     state.selectedLibraryFolder = button.dataset.libraryFolder;
@@ -552,7 +549,7 @@ function handleReadingShortcut(event) {
   if (key === "n") {
     event.preventDefault();
     dismissResumePrompt();
-    runAction("reading:next", loadNextReading);
+    runAction("reading:skip", requestLoopSkip);
   }
 }
 
@@ -825,12 +822,16 @@ function renderReaderArticle(article, resume = null) {
     ${article.content}
   `;
   decorateReaderLinks();
+  window.ReadingMarks?.paintMarks?.(elements.readerArticle, state.currentMarks || []);
   applyReaderSettings();
   updateReadLaterButton();
   window.requestAnimationFrame(() => {
     window.requestAnimationFrame(() => {
       restoreReadingPosition(resume);
       window.ReaderProgressTracker?.start();
+      window.ReadingLoopView?.resetArticle?.({
+        paywalled: Boolean(state.paywallDetection?.paywalled)
+      });
     });
   });
 }
@@ -2041,7 +2042,7 @@ async function finishOnboarding() {
   });
   hideOnboarding();
   await refreshSites();
-  await loadNextReading();
+  await startReadingLoop();
   if (state.readerArticle) showToast(`已添加 ${result.added} 个来源`);
 }
 
@@ -2054,4 +2055,264 @@ async function skipOnboarding() {
 function hideOnboarding() {
   elements.onboardingView?.classList.add("hidden");
   elements.readerModeView.classList.remove("hidden");
+}
+
+function configureReadingLoopView() {
+  window.ReadingLoopView?.configure({
+    elements: {
+      scrollElement: elements.readerModeView,
+      article: elements.readerArticle,
+      controls: document.querySelector(".reader-controls"),
+      invite: document.querySelector("#readingInvite"),
+      inviteTitle: document.querySelector("#readingInviteTitle"),
+      inviteReason: document.querySelector("#readingInviteReason"),
+      inviteKicker: document.querySelector("#readingInviteKicker"),
+      inviteAccept: document.querySelector("#readingInviteAccept"),
+      closeout: document.querySelector("#readingCloseout"),
+      closeoutNext: document.querySelector("#readingCloseoutNext"),
+      sessionEnd: document.querySelector("#readingSessionEnd"),
+      bookmark: document.querySelector("#readingBookmark"),
+      bookmarkQuote: document.querySelector("#readingBookmarkQuote"),
+      bookmarkNote: document.querySelector("#readingBookmarkNote"),
+      bookmarkOpen: document.querySelector("#readingBookmarkOpen"),
+      nextButton: elements.nextButton,
+      saveAndNextButton: elements.saveAndNextButton,
+      nextActions: document.querySelector(".reader-next-actions")
+    },
+    onAcceptInvite: () => runAction("reading:acceptInvite", acceptReadingInvite),
+    onCross: () => runAction("reading:cross", crossReadingLoop),
+    onResolveBookmark: (payload) => runAction("reading:resolveBookmark", () => resolveReadingBookmark(payload)),
+    onCloseoutRevealed: () => setStatus("正文到这里了")
+  });
+}
+
+async function startReadingLoop() {
+  dismissResumePrompt();
+  state.loopResult = null;
+  setBusy(true);
+  setStatus("正在准备今天的阅读…");
+  try {
+    if (!window.readerApi.openReadingLoop) {
+      await loadNextReading();
+      return;
+    }
+    const result = await window.readerApi.openReadingLoop();
+    await applyLoopResult(result);
+  } catch (error) {
+    setStatus(`打开阅读失败：${error.message}`);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function applyLoopResult(result) {
+  state.loopResult = result;
+  window.ReadingLoopView?.hideAllOverlays?.();
+  if (result?.mode === "resume") {
+    await presentPickedReading(result, { resume: result.resume || null });
+    window.ReadingLoopView?.setSkipLabel?.(true);
+    setStatus("继续上次未读完的一篇");
+    return;
+  }
+  if (result?.mode === "bookmark") {
+    if (result.article && result.readerArticle) {
+      state.currentMarks = result.marks || [];
+      await presentPickedReading(result, { resume: result.resume || null });
+    } else {
+      paintCurrentMarks(result.marks);
+    }
+    window.ReadingLoopView?.showBookmark?.(result.bookmark);
+    window.ReadingLoopView?.setSkipLabel?.(false);
+    showReader();
+    setStatus("掉出一张书签");
+    return;
+  }
+  if (result?.mode === "invite") {
+    window.ReadingLoopView?.hideBookmark?.();
+    state.pendingLoopResult = result;
+    window.ReadingLoopView?.showInvite?.({
+      title: result.readerArticle?.title || result.article?.title,
+      reason: result.inviteReason,
+      kind: result.inviteKind
+    });
+    showReader();
+    setStatus(result.inviteKind === "nextAfterCross" ? "读完了，下一篇已经备好" : "先看看为什么是这篇");
+    return;
+  }
+  if (result?.mode === "replace") {
+    await presentPickedReading(result);
+    window.ReadingLoopView?.setSkipLabel?.(true);
+    setStatus("已换一篇");
+    return;
+  }
+  if (result?.mode === "end") {
+    state.currentArticle = null;
+    state.readerArticle = null;
+    window.ReadingLoopView?.showSessionEnd?.();
+    showReader();
+    setStatus("这次先到这里");
+    return;
+  }
+  if (result?.mode === "empty" || result?.mode === "emptyAfterCross") {
+    const message = localizeReadingError(result.readerError);
+    renderEmptyLibrary(message);
+    setStatus(message);
+  }
+}
+
+async function acceptReadingInvite() {
+  setBusy(true);
+  try {
+    const accepted = await window.readerApi.acceptReadingInvite();
+    const payload = {
+      ...(state.pendingLoopResult || {}),
+      ...accepted,
+      resume: null
+    };
+    state.pendingLoopResult = null;
+    window.ReadingLoopView?.hideInvite?.();
+    await presentPickedReading(payload);
+    window.ReadingLoopView?.setSkipLabel?.(true);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function requestLoopSkip() {
+  dismissResumePrompt();
+  await window.ReaderProgressTracker?.stop();
+  setBusy(true);
+  setStatus("正在换一篇…");
+  try {
+    if (!window.readerApi.skipReadingLoop) {
+      await loadNextReading();
+      return;
+    }
+    const result = await window.readerApi.skipReadingLoop();
+    await applyLoopResult(result);
+  } catch (error) {
+    setStatus(`换篇失败：${error.message}`);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function saveCurrentAndSkip() {
+  if (state.currentArticle?.url && !state.savedLaterUrls.has(state.currentArticle.url)) {
+    await window.readerApi.saveForLater(currentShelfPayload());
+    await refreshShelf();
+  }
+  await requestLoopSkip();
+}
+
+async function crossReadingLoop() {
+  if (state.loopCrossing) return;
+  state.loopCrossing = true;
+  setBusy(true);
+  try {
+    const result = await window.readerApi.crossReadingLoop();
+    await applyLoopResult(result);
+  } catch (error) {
+    setStatus(`收口后打开下一篇失败：${error.message}`);
+  } finally {
+    state.loopCrossing = false;
+    setBusy(false);
+  }
+}
+
+async function presentPickedReading(result, { resume = null } = {}) {
+  if (!result?.site || !result?.article) {
+    const skipped = result?.skippedSites?.length ? ` 已跳过 ${result.skippedSites.length} 个未找到文章的来源。` : "";
+    const message = localizeReadingError(result?.readerError);
+    renderEmptyLibrary(message);
+    setStatus(`${message}${skipped}`);
+    return;
+  }
+  state.currentSite = result.site;
+  state.currentArticle = result.article;
+  state.currentArticleSource = result.article.source || "";
+  state.readerArticle = result.readerArticle;
+  state.currentMarks = result.marks || state.currentMarks || [];
+  state.bypassUrls = [];
+  renderCurrentReading();
+  if (result.readerArticle) {
+    renderReaderArticle(result.readerArticle, resume);
+    showReader();
+    rememberRecentArticle();
+  } else {
+    renderReaderFailure(localizeReadingError(result.readerError, "阅读模式暂时无法解析这篇文章。"));
+    showReader();
+    setStatus("已找到文章，但阅读模式解析失败；你仍可查看原文。");
+  }
+  await inspectPaywall();
+  window.ReadingLoopView?.setReliableEnd?.({
+    paywalled: Boolean(state.paywallDetection?.paywalled),
+    infiniteOrUnknownEnd: false
+  });
+}
+
+function paintCurrentMarks(marks) {
+  if (Array.isArray(marks)) state.currentMarks = marks;
+  if (!elements.readerArticle) return;
+  window.ReadingMarks?.paintMarks?.(elements.readerArticle, state.currentMarks || []);
+}
+
+async function saveReadingMark() {
+  if (!window.readerApi.saveReadingMark || !state.currentArticle?.url) return;
+  const snapshot = SelectionService.getSnapshot?.() || SelectionService.readLiveSelection?.();
+  const quote = String(snapshot?.text || elements.quickTranslateSource?.textContent || "").trim();
+  if (!quote) {
+    showToast("先选一句再留下");
+    return;
+  }
+  const note = document.querySelector("#readingMarkNote")?.value || "";
+  const captured = captureMarkAnchor(quote);
+  const result = await window.readerApi.saveReadingMark({
+    articleUrl: state.currentArticle.url,
+    quote,
+    note,
+    paragraphIndex: captured.paragraphIndex,
+    charOffset: captured.charOffset
+  });
+  paintCurrentMarks(result?.marks || []);
+  const noteInput = document.querySelector("#readingMarkNote");
+  if (noteInput) noteInput.value = "";
+  showToast(note.trim() ? "已留在原文里" : "已划在原文里");
+}
+
+function captureMarkAnchor(quote) {
+  const paragraphs = [...(elements.readerArticle?.querySelectorAll("p") || [])];
+  const selection = window.getSelection?.();
+  const node = selection?.anchorNode;
+  if (node && elements.readerArticle?.contains(node)) {
+    const paragraph = (node.nodeType === 1 ? node : node.parentElement)?.closest("p");
+    const paragraphIndex = paragraph ? paragraphs.indexOf(paragraph) : -1;
+    if (paragraphIndex >= 0) {
+      const text = paragraph.textContent || "";
+      return { paragraphIndex, charOffset: Math.max(0, text.indexOf(quote)) };
+    }
+  }
+  const matchIndex = paragraphs.findIndex((item) => (item.textContent || "").includes(quote));
+  if (matchIndex >= 0) {
+    return {
+      paragraphIndex: matchIndex,
+      charOffset: Math.max(0, (paragraphs[matchIndex].textContent || "").indexOf(quote))
+    };
+  }
+  return { paragraphIndex: null, charOffset: null };
+}
+
+async function resolveReadingBookmark(payload = {}) {
+  if (!window.readerApi.resolveReadingBookmark) return;
+  if (payload.action === "view" && state.loopResult?.bookmark) {
+    window.ReadingMarks?.scrollToMark?.(
+      elements.readerArticle,
+      elements.readerModeView,
+      state.loopResult.bookmark
+    );
+    await new Promise((resolve) => setTimeout(resolve, 700));
+  }
+  const result = await window.readerApi.resolveReadingBookmark({ action: payload.action || "dismiss" });
+  window.ReadingLoopView?.hideBookmark?.();
+  await applyLoopResult(result);
 }

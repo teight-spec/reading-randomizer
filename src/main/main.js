@@ -23,6 +23,7 @@ const { SecureSettingsStore } = require("./services/secureSettingsStore");
 const { GroqAnalyzer } = require("./services/groqAnalyzer");
 const { KnowledgeAnalysisQueue } = require("./services/knowledgeAnalysisQueue");
 const { RuntimeDiagnosticsStore } = require("./services/runtimeDiagnosticsStore");
+const { ReadingLoopService } = require("./services/readingLoopService");
 const { setBrowserDiagnosticRecorder } = require("./services/browserExtractionController");
 const {
   boundedId,
@@ -76,6 +77,7 @@ let translationStore;
 let networkDiagnostics;
 let siteHealthStore;
 let knowledgeDatabase;
+let readingLoopService;
 let secureSettingsStore;
 let knowledgeAnalysisQueue;
 let runtimeDiagnosticsStore;
@@ -150,6 +152,14 @@ app.whenReady().then(() => {
     articleCache,
     extractReaderArticle,
     siteHealthStore
+  });
+  readingLoopService = new ReadingLoopService({
+    userDataPath: app.getPath("userData"),
+    articlePrefetcher,
+    articleCache,
+    historyStore,
+    knowledgeDatabase,
+    extractReaderArticle
   });
   installRequestBlocker(session.defaultSession);
   networkDiagnostics = installNetworkDiagnostics({
@@ -494,6 +504,14 @@ function registerIpcHandlers() {
     logRuntime("renderer_reported_error", validateRendererError(payload));
     return true;
   });
+
+  handleIpc("reading:loopOpen", async () => readingLoopService.open());
+  handleIpc("reading:loopSkip", async () => readingLoopService.skip());
+  handleIpc("reading:loopCross", async () => readingLoopService.cross());
+  handleIpc("reading:loopAccept", async () => readingLoopService.accept());
+  handleIpc("reading:loopState", async () => readingLoopService.getState());
+  handleIpc("reading:loopSaveMark", async (_event, payload) => readingLoopService.saveMark(payload || {}));
+  handleIpc("reading:loopResolveBookmark", async (_event, payload) => readingLoopService.resolveBookmark(payload || {}));
 }
 
 function handleIpc(channel, handler) {

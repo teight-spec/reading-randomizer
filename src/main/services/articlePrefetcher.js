@@ -15,6 +15,7 @@ class ArticlePrefetcher {
     this.articlePipeline = new ArticlePipeline({ siteHealthStore });
     this.currentPromise = null;
     this.backgroundPromise = null;
+    this.extraExcludeUrls = [];
   }
 
   start() {
@@ -38,9 +39,16 @@ class ArticlePrefetcher {
     this.currentPromise = null;
   }
 
-  async consume() {
-    const result = await this.start();
+  async consume(options = {}) {
+    this.extraExcludeUrls = Array.isArray(options.excludeUrls) ? [...options.excludeUrls] : [];
+    if (this.extraExcludeUrls.length) this.currentPromise = null;
+    let result = await this.start();
+    if (result?.article?.url && this.extraExcludeUrls.includes(result.article.url)) {
+      this.currentPromise = null;
+      result = await this.start();
+    }
     this.currentPromise = null;
+    this.extraExcludeUrls = [];
     this.start();
     return result;
   }
@@ -272,7 +280,8 @@ class ArticlePrefetcher {
     const history = await this.historyStore.load();
     return new Set([
       ...(history.readArticles || []).map((item) => item.articleUrl),
-      ...(history.openedArticles || []).map((item) => item.articleUrl)
+      ...(history.openedArticles || []).map((item) => item.articleUrl),
+      ...(this.extraExcludeUrls || [])
     ]);
   }
 

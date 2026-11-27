@@ -47,6 +47,14 @@ class HistoryStore {
     });
   }
 
+  async unmarkOpened(articleUrl) {
+    return this.mutate((history) => {
+      const url = String(articleUrl || "");
+      history.openedArticles = (history.openedArticles || []).filter((item) => item.articleUrl !== url);
+      return history;
+    });
+  }
+
   async markOpened(site, article) {
     return this.mutate((history) => {
       history.openedArticles = history.openedArticles || [];

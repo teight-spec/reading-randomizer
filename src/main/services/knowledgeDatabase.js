@@ -830,6 +830,28 @@ class KnowledgeDatabase {
     };
   }
 
+  getLatestReadingSeat() {
+    const row = this.db.prepare(`
+      SELECT article_url, article_title, site_id, site_title, site_domain,
+             progress_percent, anchor_json, last_seen_at, completed_at
+      FROM reading_sessions
+      ORDER BY last_seen_at DESC, rowid DESC
+      LIMIT 1
+    `).get();
+    if (!row) return null;
+    return {
+      articleUrl: row.article_url,
+      articleTitle: row.article_title || row.article_url,
+      siteId: row.site_id || "",
+      siteTitle: row.site_title || "",
+      siteDomain: row.site_domain || "",
+      progressPercent: Math.round(Number(row.progress_percent) || 0),
+      anchor: parseAnchor(row.anchor_json),
+      lastSeenAt: row.last_seen_at,
+      completedAt: row.completed_at || null
+    };
+  }
+
   upsertShelfRow(kind, payload, timestamp = nowIso()) {
     const item = normalizeShelfPayload(payload);
     const canonical = normalizeUrl(item.articleUrl);

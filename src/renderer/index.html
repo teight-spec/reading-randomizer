@@ -7,6 +7,7 @@
   <title>随阅</title>
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="./refined.css">
+  <link rel="stylesheet" href="./reading-loop.css">
 </head>
 <body>
   <main class="reader-app">
@@ -72,7 +73,28 @@
               <button id="resumeFreshButton" class="ghost" type="button">读新的一篇</button>
             </div>
           </div>
+          <div id="readingInvite" class="reading-invite hidden">
+            <p id="readingInviteKicker" class="reading-invite-kicker">为什么是这篇</p>
+            <h1 id="readingInviteTitle"></h1>
+            <p id="readingInviteReason" class="reading-invite-reason"></p>
+            <button id="readingInviteAccept" type="button">开始读</button>
+          </div>
+          <div id="readingSessionEnd" class="reading-session-end hidden">
+            <p>先到这里。</p>
+            <p class="reading-session-end-hint">下次打开再给你一篇。</p>
+          </div>
+          <div id="readingBookmark" class="reading-bookmark hidden">
+            <p class="reading-bookmark-kicker">一张书签</p>
+            <blockquote id="readingBookmarkQuote"></blockquote>
+            <p id="readingBookmarkNote" class="reading-bookmark-note hidden"></p>
+            <button id="readingBookmarkOpen" class="reading-bookmark-open" type="button">回到原句</button>
+            <p class="reading-bookmark-hint">滑掉即可</p>
+          </div>
           <div id="readerArticle" class="reader-article"></div>
+          <div id="readingCloseout" class="reading-closeout hidden" aria-hidden="true">
+            <p class="reading-closeout-kicker">正文到这里了</p>
+            <button id="readingCloseoutNext" class="reading-closeout-next" type="button">继续，去下一篇</button>
+          </div>
           <div class="reader-controls" aria-label="阅读设置">
             <span class="reader-control-label">字号</span>
             <button id="fontMinusButton" class="ghost" aria-label="减小字号">小</button>
@@ -219,6 +241,11 @@
           <div id="quickTranslateSource" class="quick-source"></div>
           <div class="quick-section-label">翻译结果</div>
           <div id="quickTranslateResult" class="quick-result">正在翻译…</div>
+          <div id="readingMarkBox" class="reading-mark-box">
+            <label class="quick-section-label" for="readingMarkNote">留下这一句，理解可选</label>
+            <input id="readingMarkNote" type="text" maxlength="120" placeholder="一句话理解，可不写" autocomplete="off">
+            <button id="readingMarkSave" class="ghost" type="button">留在原文里</button>
+          </div>
         </aside>
         </section>
       </section>
@@ -314,9 +341,12 @@
 
   <script src="./onboardingSelection.js"></script>
   <script src="./readingAnchor.js"></script>
+  <script src="../main/services/readingLoopState.js"></script>
+  <script src="../main/services/readingMarks.js"></script>
   <script src="./runtimeReporter.js"></script>
   <script src="./readingTracker.js"></script>
   <script src="./knowledgeUi.js"></script>
+  <script src="./readingLoopView.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>
