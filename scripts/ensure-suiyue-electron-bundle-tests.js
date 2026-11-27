@@ -14,7 +14,8 @@ module.exports = function registerEnsureSuiyueElectronBundleTests({ test, fs, pa
   test("non-CI still errors when the official Electron.app is missing", async () => {
     const missingApp = path.join(os.tmpdir(), "missing-official-Electron.app");
     assert.equal(shouldSkipMissingOfficialBundle({ ci: "", sourceExists: false }), false);
-    assert.equal(shouldSkipMissingOfficialBundle({ ci: undefined, sourceExists: false }), false);
+    assert.equal(shouldSkipMissingOfficialBundle({ ci: "0", sourceExists: false }), false);
+    assert.equal(shouldSkipMissingOfficialBundle({ ci: "false", sourceExists: false }), false);
     await assert.rejects(
       () => main({ sourceAppPath: missingApp, ci: "" }),
       (error) => {
