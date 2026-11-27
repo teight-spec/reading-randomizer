@@ -21,6 +21,7 @@ const { clearBrowserCaches, getCacheUsage } = require("./services/maintenance");
 const { KnowledgeDatabase } = require("./services/knowledgeDatabase");
 const { SecureSettingsStore } = require("./services/secureSettingsStore");
 const { GroqAnalyzer } = require("./services/groqAnalyzer");
+const { GroqTranslator } = require("./services/groqTranslator");
 const { KnowledgeAnalysisQueue } = require("./services/knowledgeAnalysisQueue");
 const { RuntimeDiagnosticsStore } = require("./services/runtimeDiagnosticsStore");
 const { ReadingLoopService } = require("./services/readingLoopService");
@@ -145,7 +146,11 @@ app.whenReady().then(() => {
     settingsStore: secureSettingsStore,
     analyzer: new GroqAnalyzer({ settingsStore: secureSettingsStore })
   });
-  translator = new Translator({ translationStore });
+  translator = new Translator({
+    translationStore,
+    settingsStore: secureSettingsStore,
+    groqTranslator: new GroqTranslator({ settingsStore: secureSettingsStore })
+  });
   articlePrefetcher = new ArticlePrefetcher({
     siteStore,
     historyStore,

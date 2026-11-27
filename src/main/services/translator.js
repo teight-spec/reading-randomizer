@@ -12,9 +12,11 @@ const translationRequests = createRequestGovernance({
 });
 
 class Translator {
-  constructor({ translationStore } = {}) {
+  constructor({ translationStore, groqTranslator, settingsStore } = {}) {
     this.cache = new Map();
     this.translationStore = translationStore || null;
+    this.groqTranslator = groqTranslator || null;
+    this.settingsStore = settingsStore || null;
   }
 
   async translate({ text, direction, articleId, selectionKey }) {
@@ -41,6 +43,27 @@ class Translator {
         ...this.cache.get(cacheKey),
         cached: true
       };
+    }
+
+    if (this.groqTranslator) {
+      try {
+        const groqResult = await this.groqTranslator.translate({ text: trimmed, target });
+        const result = {
+          translatedText: groqResult.translatedText,
+          provider: "groq",
+          cached: false,
+          model: groqResult.model,
+          promptVersion: groqResult.promptVersion
+        };
+        this.writeCache(cacheKey, result);
+        await this.persist(cacheKey, result);
+        return result;
+      } catch (error) {
+        if (error?.code === "GROQ_CONSENT_REQUIRED" || error?.code === "GROQ_BUDGET_EXCEEDED") {
+          throw error;
+        }
+        // GROQ_NOT_CONFIGURED or a Groq outage: fall through to existing non-Groq providers.
+      }
     }
 
     try {
