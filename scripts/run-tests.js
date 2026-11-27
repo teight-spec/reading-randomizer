@@ -1620,6 +1620,7 @@ test("unpackaged dock icon uses the existing packaged app-icon asset", () => {
 require("./quick-translate-panel-tests")({ test, fs, path, assert });
 require("./reading-loop-tests")({ test, fs, path, assert, os });
 require("./reading-marks-tests")({ test, fs, path, assert, os });
+require("./ensure-suiyue-electron-bundle-tests")({ test, fs, path, assert, os });
 
 (async () => {
   for (const item of tests) {
