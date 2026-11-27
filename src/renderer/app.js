@@ -18,7 +18,9 @@ const state = {
     lastEvent: "init",
     error: null
   },
-  translationCache: new Map(),
+  translationCache: (typeof window !== "undefined" && window.ReaderCache && window.ReaderCache.BoundedCache)
+    ? new window.ReaderCache.BoundedCache({ maxSize: 200, ttlMs: 30 * 60 * 1000 })
+    : new Map(),
   lastSelectionKey: "",
   lastSelection: {
     text: "",
@@ -244,6 +246,13 @@ const SelectionService = {
   }
 };
 
+
+function isGroqGateError(error) {
+  const code = error?.code || error?.error;
+  if (code === "GROQ_CONSENT_REQUIRED" || code === "GROQ_BUDGET_EXCEEDED") return true;
+  return /尚未同意使用云端 Groq|今日 Groq 翻译已达上限/.test(String(error?.message || error?.translatedText || ""));
+}
+
 const TranslationService = {
   async translate({ text = "", direction = "auto", cacheKey = "", source = "manual", token = null } = {}) {
     const snapshot = SelectionService.getTextSnapshot(text, direction);
@@ -349,18 +358,20 @@ const TranslationService = {
         return result;
       } catch (error) {
         lastError = error;
+        if (isGroqGateError(error)) break;
         if (attempt === 0) await sleep(250);
       }
     }
 
     const rateLimited = isRateLimited(lastError);
+    const gateError = isGroqGateError(lastError);
     setTranslationState(rateLimited ? TRANSLATION_STATES.RATE_LIMITED : TRANSLATION_STATES.FAILED, {
-      event: rateLimited ? "rate_limited" : "translate_request_failed",
+      event: rateLimited ? "rate_limited" : gateError ? "groq_gate_rejected" : "translate_request_failed",
       source,
       textLength: snapshot.text.length,
       error: lastError?.message || "未知翻译错误"
     });
-    showToast(rateLimited ? "翻译请求过于频繁，请稍后重试。" : "翻译失败，请重试。");
+    showToast(gateError ? lastError.message : rateLimited ? "翻译请求过于频繁，请稍后重试。" : "翻译失败，请重试。");
     throw lastError;
   },
 
@@ -1004,14 +1015,18 @@ async function handleSelectionTranslation() {
     });
     if (result.stale || !isCurrentTranslateToken(token)) return;
     if (result.error) {
-      elements.quickTranslateResult.textContent = "翻译服务暂时不可用。";
+      elements.quickTranslateResult.textContent = isGroqGateError(result)
+        ? (result.translatedText || result.error)
+        : "翻译服务暂时不可用。";
       showToast(result.translatedText);
       return;
     }
     elements.quickTranslateResult.textContent = result.translatedText + (result.cached ? "\n\n（来自缓存）" : "");
   } catch (error) {
     if (!isCurrentTranslateToken(token)) return;
-    elements.quickTranslateResult.textContent = "翻译服务暂时不可用。";
+    elements.quickTranslateResult.textContent = isGroqGateError(error)
+      ? error.message
+      : "翻译服务暂时不可用。";
     showToast(error.message);
   }
 }
