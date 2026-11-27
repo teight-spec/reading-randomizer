@@ -1,4 +1,5 @@
 const { createExtractionSession } = require("./extractionSession");
+const { normalizeHttpUrl } = require("./inputValidation");
 const { formatUrlForLog } = require("./requestGovernor");
 
 const DEFAULT_TIMEOUT_MS = 18000;
@@ -54,6 +55,7 @@ class BrowserExtractionController {
         }
       });
       win.__readerWindowLabel = label;
+      secureHiddenExtractionWindow(win);
       this.metrics.launched += 1;
       this.metrics.maxConcurrentObserved = Math.max(this.metrics.maxConcurrentObserved, this.activeCount);
       if (this.attachDiagnostics) this.attachDiagnostics(win, label);
@@ -189,6 +191,30 @@ function loadBestEffort(win, url, timeoutMs) {
   });
 }
 
+function secureHiddenExtractionWindow(win) {
+  const contents = win?.webContents;
+  if (!contents) return;
+  if (typeof contents.setWindowOpenHandler === "function") {
+    contents.setWindowOpenHandler(() => ({ action: "deny" }));
+  }
+  if (typeof contents.on !== "function") return;
+  contents.on("will-navigate", (event, url) => {
+    if (!isAllowedRemoteNavigation(url)) event.preventDefault();
+  });
+  contents.on("will-attach-webview", (event) => {
+    event.preventDefault();
+  });
+}
+
+function isAllowedRemoteNavigation(url) {
+  try {
+    normalizeHttpUrl(url, { label: "Navigation URL" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function isWindowUsable(win) {
   if (!win || win.isDestroyed?.()) return false;
   if (!win.webContents) return false;
@@ -231,7 +257,9 @@ function setBrowserDiagnosticRecorder(recorder) {
 
 module.exports = {
   BrowserExtractionController,
+  isAllowedRemoteNavigation,
   loadBestEffort,
   isWindowUsable,
+  secureHiddenExtractionWindow,
   setBrowserDiagnosticRecorder
 };

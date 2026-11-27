@@ -9,3 +9,4 @@ release
 *.db-shm
 *.backup-v*
 runtime-diagnostics.json
+.electron-runtime

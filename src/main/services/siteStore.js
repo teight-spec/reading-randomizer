@@ -1,12 +1,16 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
-const { readChromeBookmarks } = require("./bookmarks");
+const { listChromeBookmarkFolders, readChromeBookmarks } = require("./bookmarks");
 const { writeJsonAtomic } = require("./jsonFile");
 const { normalizeHttpUrl } = require("./inputValidation");
+const { countUniqueAdditions } = require("../../renderer/onboardingSelection");
+const { loadSourcePacks } = require("./sourcePacks");
 
 const EMPTY_SOURCES = {
   sites: [],
-  importedChromeAt: null
+  importedChromeAt: null,
+  onboardingCompleted: false,
+  selectedBookmarkFolders: []
 };
 
 class SiteStore {
@@ -55,34 +59,101 @@ class SiteStore {
     return site;
   }
 
-  async importChromeBookmarks() {
-    const bookmarks = await readChromeBookmarks();
-    return this.mutate((data) => {
-      const existingUrls = new Set(data.sites.map((site) => normalizeUrl(site.url)));
-      const importedSites = [];
+  async importChromeBookmarks(folderPaths = [], options = {}) {
+    return this.applyOnboardingSelection({
+      folderPaths,
+      packIds: [],
+      bookmarksPath: options.bookmarksPath,
+      completeOnboarding: options.completeOnboarding === true
+    });
+  }
 
-      for (const site of bookmarks.sites) {
+  async listBookmarkFolders(options = {}) {
+    return listChromeBookmarkFolders(options);
+  }
+
+  async getOnboardingState() {
+    const data = await this.load();
+    const packs = loadSourcePacks().map((pack) => ({
+      id: pack.id,
+      title: pack.title,
+      description: pack.description,
+      sites: pack.sites.map((site) => ({
+        title: site.title,
+        url: site.url
+      }))
+    }));
+    return {
+      completed: data.onboardingCompleted === true,
+      siteCount: data.sites.length,
+      show: data.onboardingCompleted !== true && data.sites.length === 0,
+      selectedBookmarkFolders: Array.isArray(data.selectedBookmarkFolders) ? data.selectedBookmarkFolders : [],
+      packs
+    };
+  }
+
+  async completeOnboarding() {
+    return this.mutate((data) => {
+      data.onboardingCompleted = true;
+      return { completed: true, siteCount: data.sites.length };
+    });
+  }
+
+  async applyOnboardingSelection({
+    folderPaths = [],
+    packIds = [],
+    bookmarksPath,
+    completeOnboarding = true
+  } = {}) {
+    const bookmarks = folderPaths.length
+      ? await readChromeBookmarks({ targetFolders: folderPaths, bookmarksPath })
+      : { sites: [], foundFolders: [], bookmarksPath: bookmarksPath || null };
+    const selectedPacks = loadSourcePacks().filter((pack) => packIds.includes(pack.id));
+    const incoming = [
+      ...bookmarks.sites.map((site) => ({ ...site, source: "chrome-bookmark" })),
+      ...selectedPacks.flatMap((pack) => pack.sites.map((site) => ({
+        ...site,
+        source: "recommended-pack",
+        folderPath: pack.title
+      })))
+    ];
+    return this.mutate((data) => {
+      const tally = countUniqueAdditions(data.sites.map((site) => site.url), incoming.map((site) => site.url));
+      const accepted = new Set(tally.accepted);
+      const importedSites = [];
+      for (const site of incoming) {
         const normalized = normalizeUrl(site.url);
-        if (!normalized || existingUrls.has(normalized)) continue;
-        importedSites.push({
-          ...site,
+        if (!normalized || !accepted.has(normalized)) continue;
+        accepted.delete(normalized);
+        const stored = {
+          id: stableSiteId(normalized),
+          title: site.title?.trim() || getDomain(normalized),
           url: normalized,
           domain: getDomain(normalized),
           folderPath: normalizeFolderPath(site.folderPath),
-          articleSources: guessDefaultSources(normalized),
-          source: "chrome-bookmark",
+          articleSources: site.feedUrl
+            ? [{ type: "feed", url: normalizeUrl(site.feedUrl), title: "Feed" }].filter((source) => source.url)
+            : guessDefaultSources(normalized),
+          source: site.source || "manual",
           paused: false,
           createdAt: new Date().toISOString()
-        });
-        existingUrls.add(normalized);
+        };
+        const knownSources = getKnownArticleSources(normalized);
+        stored.articleSources = mergeArticleSources([...(stored.articleSources || []), ...knownSources]);
+        data.sites.push(stored);
+        importedSites.push(stored);
       }
-
-      data.sites.push(...importedSites);
-      data.importedChromeAt = new Date().toISOString();
+      if (folderPaths.length) {
+        data.selectedBookmarkFolders = [...folderPaths];
+        data.importedChromeAt = new Date().toISOString();
+      }
+      if (completeOnboarding) data.onboardingCompleted = true;
       return {
-        ...bookmarks,
+        added: importedSites.length,
+        duplicates: tally.duplicates,
         importedCount: importedSites.length,
-        totalSites: data.sites.length
+        totalSites: data.sites.length,
+        foundFolders: bookmarks.foundFolders || []
       };
     });
   }
@@ -263,11 +334,19 @@ function migrateData(data) {
     return next;
   });
 
+  let onboardingCompleted = data.onboardingCompleted === true;
+  if (data.onboardingCompleted === undefined || data.onboardingCompleted === null) {
+    onboardingCompleted = sites.length > 0;
+    changed = true;
+  }
+
   return {
     changed,
     data: {
       ...data,
-      sites
+      sites,
+      onboardingCompleted,
+      selectedBookmarkFolders: Array.isArray(data.selectedBookmarkFolders) ? data.selectedBookmarkFolders : []
     }
   };
 }

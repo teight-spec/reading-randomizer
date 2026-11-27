@@ -114,12 +114,14 @@ class SecureSettingsStore {
       this.safeStorage?.decryptString
     );
     if (!hasCryptoMethods) return false;
-    if (["darwin", "win32"].includes(process.platform)) return true;
-    try {
-      return Boolean(this.safeStorage?.isEncryptionAvailable?.());
-    } catch {
-      return false;
+    if (typeof this.safeStorage.isEncryptionAvailable === "function") {
+      try {
+        return Boolean(this.safeStorage.isEncryptionAvailable());
+      } catch {
+        return false;
+      }
     }
+    return ["darwin", "win32"].includes(process.platform);
   }
 }
 

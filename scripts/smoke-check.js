@@ -75,7 +75,11 @@ const required = [
   "src/renderer/knowledgeUi.js",
   "src/renderer/runtimeReporter.js",
   "src/renderer/styles.css",
-  "src/renderer/refined.css"
+  "src/renderer/refined.css",
+  "src/renderer/readingAnchor.js",
+  "src/renderer/onboardingSelection.js",
+  "src/main/data/recommendedSourcePacks.json",
+  "src/main/services/sourcePacks.js"
 ];
 
 let ok = true;

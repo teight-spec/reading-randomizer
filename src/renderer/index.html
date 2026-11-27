@@ -7,6 +7,7 @@
   <title>随阅</title>
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="./refined.css">
+  <link rel="stylesheet" href="./reading-loop.css">
 </head>
 <body>
   <main class="reader-app">
@@ -25,6 +26,10 @@
         </button>
         <button id="knowledgeButton" class="sidebar-nav-item" type="button">
           <span>知识库</span>
+        </button>
+        <button id="shelfButton" class="sidebar-nav-item" type="button">
+          <span>稍后读</span>
+          <em id="shelfBadge" class="nav-badge hidden">0</em>
         </button>
       </nav>
 
@@ -50,15 +55,46 @@
           </div>
         </div>
         <nav class="toolbar" aria-label="文章操作">
-          <button id="originalButton" class="ghost">原文</button>
-          <button id="archiveButton" class="ghost">镜像</button>
+          <button id="readLaterButton" class="ghost" type="button">稍后读</button>
+          <button id="originalButton" class="ghost" type="button">原文</button>
         </nav>
       </header>
 
       <section class="content-shell">
         <section class="reading-stage">
         <article id="readerModeView" class="reader-mode">
+          <div id="resumePrompt" class="resume-prompt hidden">
+            <div class="resume-prompt-copy">
+              <p id="resumePromptText"></p>
+              <p class="resume-prompt-hint">或稍等，将为你换一篇新的</p>
+            </div>
+            <div class="resume-prompt-actions">
+              <button id="resumeContinueButton" type="button">继续读</button>
+              <button id="resumeFreshButton" class="ghost" type="button">读新的一篇</button>
+            </div>
+          </div>
+          <div id="readingInvite" class="reading-invite hidden">
+            <p id="readingInviteKicker" class="reading-invite-kicker">为什么是这篇</p>
+            <h1 id="readingInviteTitle"></h1>
+            <p id="readingInviteReason" class="reading-invite-reason"></p>
+            <button id="readingInviteAccept" type="button">开始读</button>
+          </div>
+          <div id="readingSessionEnd" class="reading-session-end hidden">
+            <p>先到这里。</p>
+            <p class="reading-session-end-hint">下次打开再给你一篇。</p>
+          </div>
+          <div id="readingBookmark" class="reading-bookmark hidden">
+            <p class="reading-bookmark-kicker">一张书签</p>
+            <blockquote id="readingBookmarkQuote"></blockquote>
+            <p id="readingBookmarkNote" class="reading-bookmark-note hidden"></p>
+            <button id="readingBookmarkOpen" class="reading-bookmark-open" type="button">回到原句</button>
+            <p class="reading-bookmark-hint">滑掉即可</p>
+          </div>
           <div id="readerArticle" class="reader-article"></div>
+          <div id="readingCloseout" class="reading-closeout hidden" aria-hidden="true">
+            <p class="reading-closeout-kicker">正文到这里了</p>
+            <button id="readingCloseoutNext" class="reading-closeout-next" type="button">继续，去下一篇</button>
+          </div>
           <div class="reader-controls" aria-label="阅读设置">
             <span class="reader-control-label">字号</span>
             <button id="fontMinusButton" class="ghost" aria-label="减小字号">小</button>
@@ -68,8 +104,67 @@
             <button id="widthMinusButton" class="ghost">窄版</button>
             <button id="widthPlusButton" class="ghost">宽版</button>
           </div>
-          <button id="nextButton" class="reader-next-float" type="button">下一篇</button>
+          <div class="reader-next-actions">
+            <button id="saveAndNextButton" class="reader-next-secondary" type="button">存下再换</button>
+            <button id="nextButton" class="reader-next-float" type="button">下一篇</button>
+          </div>
         </article>
+
+        <section id="onboardingView" class="onboarding-view hidden">
+          <div class="onboarding-card">
+            <div class="onboarding-dots" aria-hidden="true">
+              <span data-onboarding-dot="1"></span>
+              <span data-onboarding-dot="2"></span>
+              <span data-onboarding-dot="3"></span>
+            </div>
+            <section id="onboardingStepWelcome" class="onboarding-step">
+              <span class="eyebrow">开始使用</span>
+              <h1>欢迎来到随阅</h1>
+              <p>选择 Chrome 书签文件夹，或加上推荐来源。用来练英语，也用来沉淀知识。</p>
+              <div class="onboarding-actions">
+                <button id="onboardingStartButton" type="button">开始</button>
+                <button id="onboardingSkipButton" class="onboarding-skip" type="button">跳过，稍后在设置里添加</button>
+              </div>
+            </section>
+            <section id="onboardingStepFolders" class="onboarding-step hidden">
+              <span id="onboardingFoldersEyebrow" class="eyebrow">第 2 步</span>
+              <h1 id="onboardingFoldersTitle">选择书签文件夹</h1>
+              <p id="bookmarkFolderHint" class="onboarding-hint hidden"></p>
+              <div id="bookmarkFolderTree" class="bookmark-folder-tree"></div>
+              <p id="bookmarkFolderSummary" class="bookmark-folder-summary">已选 0 个文件夹，共 0 个链接</p>
+              <div class="onboarding-actions">
+                <button id="onboardingFoldersNextButton" type="button">下一步</button>
+                <button id="onboardingFoldersCancelButton" class="ghost hidden" type="button">取消</button>
+              </div>
+            </section>
+            <section id="onboardingStepPacks" class="onboarding-step hidden">
+              <span class="eyebrow">第 3 步</span>
+              <h1>推荐来源</h1>
+              <div id="sourcePackList" class="source-pack-list"></div>
+              <div class="onboarding-actions">
+                <button id="onboardingFinishButton" type="button">以后再说</button>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="shelfView" class="library-view hidden">
+          <header class="library-header">
+            <div>
+              <span class="eyebrow">阅读清单</span>
+              <h1 id="shelfHeading">稍后读</h1>
+              <p id="shelfStats">把想留着的文章放在这里。</p>
+            </div>
+            <div class="library-header-actions">
+              <button id="closeShelfButton" class="ghost" type="button">返回阅读</button>
+            </div>
+          </header>
+          <div class="shelf-tabs" role="tablist">
+            <button id="shelfLaterTab" class="shelf-tab active" type="button" data-shelf-tab="later">稍后读</button>
+            <button id="shelfRecentTab" class="shelf-tab" type="button" data-shelf-tab="recent">最近阅读</button>
+          </div>
+          <div id="shelfList" class="shelf-list"></div>
+        </section>
 
         <section id="libraryView" class="library-view hidden">
           <header class="library-header">
@@ -146,6 +241,11 @@
           <div id="quickTranslateSource" class="quick-source"></div>
           <div class="quick-section-label">翻译结果</div>
           <div id="quickTranslateResult" class="quick-result">正在翻译…</div>
+          <div id="readingMarkBox" class="reading-mark-box">
+            <label class="quick-section-label" for="readingMarkNote">留下这一句，理解可选</label>
+            <input id="readingMarkNote" type="text" maxlength="120" placeholder="一句话理解，可不写" autocomplete="off">
+            <button id="readingMarkSave" class="ghost" type="button">留在原文里</button>
+          </div>
         </aside>
         </section>
       </section>
@@ -163,9 +263,9 @@
         <section class="management-section">
           <div class="management-heading">
             <strong>导入书签</strong>
-            <span>从 Chrome 的 English、fashion、literary award 文件夹中一次性导入。</span>
+            <span>重新选择要导入的 Chrome 书签文件夹。</span>
           </div>
-          <button id="importChromeButton" class="import-button">导入书签文件夹</button>
+          <button id="importChromeButton" class="import-button" type="button">导入书签</button>
         </section>
 
         <section class="management-section">
@@ -182,27 +282,33 @@
           </form>
         </section>
 
-        <section class="management-section maintenance-box">
-          <div>
-            <strong>浏览器缓存</strong>
-            <span id="cacheUsage">正在检查…</span>
-          </div>
-          <button id="clearCacheButton" class="ghost">清理</button>
-        </section>
-
         <div class="management-links">
-          <button id="settingsPanelButton" class="ghost">镜像设置</button>
-          <button id="aiSettingsButton" class="ghost">隐私与 AI</button>
+          <button id="aiSettingsButton" class="ghost" type="button">隐私与 AI</button>
         </div>
-      </section>
-
-      <section id="bypassPanel" class="drawer-panel hidden">
-        <form id="addBypassForm" class="stack-form">
-          <input id="bypassNameInput" placeholder="镜像名称">
-          <input id="bypassTemplateInput" placeholder="https://archive.example/{url}">
-          <button type="submit">添加镜像来源</button>
-        </form>
-        <div id="bypassList" class="list"></div>
+        <details id="advancedSettings" class="advanced-settings">
+          <summary>高级</summary>
+          <div class="advanced-settings-body">
+            <section class="management-section">
+              <div class="management-heading">
+                <strong>镜像来源</strong>
+                <span>原文打不开或遇到付费墙时，可以用镜像在外部浏览器打开。</span>
+              </div>
+              <form id="addBypassForm" class="stack-form">
+                <input id="bypassNameInput" placeholder="镜像名称">
+                <input id="bypassTemplateInput" placeholder="https://archive.example/{url}">
+                <button type="submit">添加镜像来源</button>
+              </form>
+              <div id="bypassList" class="list"></div>
+            </section>
+            <section class="management-section maintenance-box">
+              <div>
+                <strong>浏览器缓存</strong>
+                <span id="cacheUsage">正在检查…</span>
+              </div>
+              <button id="clearCacheButton" class="ghost" type="button">清理</button>
+            </section>
+          </div>
+        </details>
       </section>
 
       <section id="aiSettingsPanel" class="drawer-panel hidden">
@@ -233,9 +339,14 @@
     </aside>
   </main>
 
+  <script src="./onboardingSelection.js"></script>
+  <script src="./readingAnchor.js"></script>
+  <script src="../main/services/readingLoopState.js"></script>
+  <script src="../main/services/readingMarks.js"></script>
   <script src="./runtimeReporter.js"></script>
   <script src="./readingTracker.js"></script>
   <script src="./knowledgeUi.js"></script>
+  <script src="./readingLoopView.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

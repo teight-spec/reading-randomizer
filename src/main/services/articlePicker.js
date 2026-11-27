@@ -1,4 +1,4 @@
-const { looksPaywalled } = require("./archive");
+const { detectPaywallFromPage } = require("./paywallDetection");
 const { createRequestGovernance } = require("./requestGovernance");
 const { resolveSiteStrategy } = require("./siteStrategies");
 const { discoverFeedUrls } = require("./feedDiscovery");
@@ -31,12 +31,24 @@ async function inspectArticle(url) {
       fetchMode: "inspect",
       strategySource: resolveSiteStrategy(url)?.id || "generic"
     });
+    const detection = detectPaywallFromPage({
+      html: response.text || "",
+      status: response.status,
+      error: null
+    });
     return {
-      paywalled: looksPaywalled(response.text)
+      ...detection,
+      httpStatus: response.status || null
     };
-  } catch {
+  } catch (error) {
+    const detection = detectPaywallFromPage({
+      html: "",
+      status: error.status || 0,
+      error
+    });
     return {
-      paywalled: false
+      ...detection,
+      httpStatus: error.status || null
     };
   }
 }
