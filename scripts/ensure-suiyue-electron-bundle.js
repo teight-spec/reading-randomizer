@@ -32,10 +32,29 @@ function setPlistString(plist, key, value) {
   }
 }
 
-async function main() {
-  if (!fs.existsSync(sourceApp)) {
-    throw new Error(`Official Electron.app is missing at ${sourceApp}. Run npm ci first.`);
+function isCiEnvironment(value = process.env.CI) {
+  if (value == null) return false;
+  const normalized = String(value).trim().toLowerCase();
+  return normalized !== "" && normalized !== "0" && normalized !== "false" && normalized !== "no";
+}
+
+function shouldSkipMissingOfficialBundle({ ci = process.env.CI, sourceExists } = {}) {
+  return isCiEnvironment(ci) && sourceExists === false;
+}
+
+async function main({ sourceAppPath = sourceApp, ci = process.env.CI } = {}) {
+  if (!fs.existsSync(sourceAppPath)) {
+    // CI verify/tests do not need the local 随阅.app wrapper.
+    // Exit 0 so postinstall does not fail `npm ci`. Local (non-CI) use must still error.
+    if (shouldSkipMissingOfficialBundle({ ci, sourceExists: false })) {
+      process.stderr.write(
+        `Skipping 随阅.app wrapper in CI; official Electron.app is missing at ${sourceAppPath}.\n`
+      );
+      return { skipped: true, reason: "missing-official-app-in-ci" };
+    }
+    throw new Error(`Official Electron.app is missing at ${sourceAppPath}. Run npm ci first.`);
   }
+
 
   if (!bundleIsCurrent()) {
     await fsp.mkdir(destDir, { recursive: true });
@@ -83,7 +102,15 @@ async function main() {
   process.stdout.write(`${binary}\n`);
 }
 
-main().catch((error) => {
-  console.error(error.message || error);
-  process.exit(1);
-});
+module.exports = {
+  main,
+  isCiEnvironment,
+  shouldSkipMissingOfficialBundle
+};
+
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error.message || error);
+    process.exit(1);
+  });
+}
