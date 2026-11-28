@@ -140,6 +140,8 @@ module.exports = function registerQuickTranslatePanelTests({ test, fs, path, ass
       }
     };
 
+    const sessionSource = await fs.readFile(path.join(__dirname, "..", "src", "renderer", "nextReadingSession.js"), "utf8");
+    window.eval(sessionSource);
     const source = await fs.readFile(path.join(__dirname, "..", "src", "renderer", "app.js"), "utf8");
     window.eval(source);
     await waitFor(

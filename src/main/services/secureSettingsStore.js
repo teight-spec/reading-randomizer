@@ -5,12 +5,24 @@ const { writeJsonAtomic } = require("./jsonFile");
 const DEFAULT_MODEL = "qwen/qwen3.6-27b";
 
 class SecureSettingsStore {
-  constructor(userDataPath, { safeStorage } = {}) {
+  constructor(userDataPath, { safeStorage, writeJson } = {}) {
     this.filePath = path.join(userDataPath, "secure-settings.json");
     this.safeStorage = safeStorage || null;
+    this.writeJson = writeJson || writeJsonAtomic;
+    this.queue = Promise.resolve();
+  }
+
+  enqueue(work) {
+    const run = this.queue.then(work, work);
+    this.queue = run.then(() => undefined, () => undefined);
+    return run;
   }
 
   async load() {
+    return this.enqueue(() => this.loadUnlocked());
+  }
+
+  async loadUnlocked() {
     try {
       const raw = await fs.readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw);
@@ -37,16 +49,23 @@ class SecureSettingsStore {
     }
   }
 
+  async persist(settings) {
+    await this.writeJson(this.filePath, settings);
+    await fs.chmod(this.filePath, 0o600);
+  }
+
   async getGroqApiKey() {
-    const environmentKey = String(process.env.GROQ_API_KEY || "").trim();
-    if (environmentKey) return environmentKey;
-    const settings = await this.load();
-    if (!settings.groqEncryptedKey || !this.canEncrypt()) return "";
-    try {
-      return this.safeStorage.decryptString(Buffer.from(settings.groqEncryptedKey, "base64"));
-    } catch {
-      return "";
-    }
+    return this.enqueue(async () => {
+      const environmentKey = String(process.env.GROQ_API_KEY || "").trim();
+      if (environmentKey) return environmentKey;
+      const settings = await this.loadUnlocked();
+      if (!settings.groqEncryptedKey || !this.canEncrypt()) return "";
+      try {
+        return this.safeStorage.decryptString(Buffer.from(settings.groqEncryptedKey, "base64"));
+      } catch {
+        return "";
+      }
+    });
   }
 
   async saveGroqApiKey(apiKey) {
@@ -57,44 +76,52 @@ class SecureSettingsStore {
     if (normalized && !this.canEncrypt()) {
       throw new Error("Secure credential storage is unavailable; use GROQ_API_KEY instead");
     }
-    const settings = await this.load();
-    settings.groqEncryptedKey = normalized
-      ? this.safeStorage.encryptString(normalized).toString("base64")
-      : "";
-    await writeJsonAtomic(this.filePath, settings);
-    await fs.chmod(this.filePath, 0o600);
-    return this.getPublicSettings();
+    return this.enqueue(async () => {
+      const settings = await this.loadUnlocked();
+      settings.groqEncryptedKey = normalized
+        ? this.safeStorage.encryptString(normalized).toString("base64")
+        : "";
+      await this.persist(settings);
+      return this.publicSettingsFrom(settings);
+    });
   }
 
   async getModel() {
-    return String(process.env.GROQ_MODEL || "").trim() || (await this.load()).groqModel || DEFAULT_MODEL;
+    return this.enqueue(async () => {
+      return String(process.env.GROQ_MODEL || "").trim() || (await this.loadUnlocked()).groqModel || DEFAULT_MODEL;
+    });
   }
 
   async saveTranslationConsent(enabled) {
     if (typeof enabled !== "boolean") throw new Error("Translation consent must be a boolean");
-    const settings = await this.load();
-    settings.translationConsent = enabled;
-    await writeJsonAtomic(this.filePath, settings);
-    await fs.chmod(this.filePath, 0o600);
-    return this.getPublicSettings();
+    return this.enqueue(async () => {
+      const settings = await this.loadUnlocked();
+      settings.translationConsent = enabled;
+      await this.persist(settings);
+      return this.publicSettingsFrom(settings);
+    });
   }
 
   async saveReaderPreferences(patch = {}) {
-    const settings = await this.load();
-    if (patch.fontSize !== undefined) {
-      settings.readerFontSize = clampNumber(patch.fontSize, 16, 28, settings.readerFontSize);
-    }
-    if (patch.width !== undefined) {
-      settings.readerWidth = clampNumber(patch.width, 560, 1040, settings.readerWidth);
-    }
-    await writeJsonAtomic(this.filePath, settings);
-    await fs.chmod(this.filePath, 0o600);
-    return this.getPublicSettings();
+    return this.enqueue(async () => {
+      const settings = await this.loadUnlocked();
+      if (patch.fontSize !== undefined) {
+        settings.readerFontSize = clampNumber(patch.fontSize, 16, 28, settings.readerFontSize);
+      }
+      if (patch.width !== undefined) {
+        settings.readerWidth = clampNumber(patch.width, 560, 1040, settings.readerWidth);
+      }
+      await this.persist(settings);
+      return this.publicSettingsFrom(settings);
+    });
   }
 
   async getPublicSettings() {
+    return this.enqueue(async () => this.publicSettingsFrom(await this.loadUnlocked()));
+  }
+
+  publicSettingsFrom(settings) {
     const environmentConfigured = Boolean(String(process.env.GROQ_API_KEY || "").trim());
-    const settings = await this.load();
     return {
       configured: environmentConfigured || Boolean(settings.groqEncryptedKey && this.canEncrypt()),
       source: environmentConfigured ? "environment" : settings.groqEncryptedKey ? "secure-storage" : "none",

@@ -177,3 +177,30 @@
 .reading-bookmark-hint {
   margin-top: 8px;
 }
+
+
+.next-reading-notice {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin: 0 auto 16px;
+  max-width: var(--reader-width);
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: #fff7e6;
+  color: inherit;
+}
+
+.next-reading-notice.hidden {
+  display: none;
+}
+
+.next-reading-notice p {
+  margin: 0 0 8px;
+}
+
+.next-reading-notice .notice-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}

@@ -36,6 +36,10 @@ const state = {
   toastTimer: null,
   preferenceSaveTimer: null,
   eventsBound: false,
+  nextReadingRetry: null,
+  nextReadingFailedUrl: "",
+  savedReaderFontSize: 20,
+  savedReaderWidth: 720,
   busy: false,
   shelf: { later: [], recent: [] },
   shelfTab: "later",
@@ -140,8 +144,11 @@ const elements = {
   bookmarkFolderSummary: document.querySelector("#bookmarkFolderSummary"),
   sourcePackList: document.querySelector("#sourcePackList"),
   resumeContinueButton: document.querySelector("#resumeContinueButton"),
-  resumeFreshButton: document.querySelector("#resumeFreshButton")
+  resumeFreshButton: document.querySelector("#resumeFreshButton"),
+  nextReadingNotice: document.querySelector("#nextReadingNotice")
 };
+
+const nextReadingSession = window.NextReadingSession.createSession();
 
 const TRANSLATION_STATES = {
   IDLE: "idle",
@@ -507,6 +514,9 @@ function handleDocumentClick(event) {
   if (button.dataset.bypassAction) runAction(`bypass:${button.dataset.bypassAction}`, () => handleBypassAction(button));
   if (button.dataset.shelfTab) setShelfTab(button.dataset.shelfTab);
   if (button.dataset.shelfAction) runAction(`shelf:${button.dataset.shelfAction}`, () => handleShelfAction(button));
+  if (button.dataset.nextReadingAction) {
+    runAction(`reading:${button.dataset.nextReadingAction}`, () => handleNextReadingNoticeAction(button));
+  }
 }
 
 function handleDocumentChange(event) {
@@ -625,42 +635,178 @@ function maybeAutoRetractQuickTranslate() {
 async function loadNextReading() {
   dismissResumePrompt();
   state.resumeOffer = null;
-  await window.ReaderProgressTracker?.stop();
+  state.nextReadingRetry = { type: "next" };
+  await requestNextReading({
+    pendingStatus: "正在为你挑选一篇新文章…",
+    action: "next",
+    fetchReading: () => window.readerApi.getNextReading()
+  });
+}
+
+async function requestNextReading({ pendingStatus, fetchReading, action = "next" }) {
+  const generation = nextReadingSession.begin();
+  const hasCurrent = Boolean(state.currentArticle);
+  const savedScrollTop = elements.readerModeView?.scrollTop || 0;
   setBusy(true);
-  setStatus("正在为你挑选一篇新文章…");
-  renderReaderLoading();
+  setStatus(pendingStatus);
+  if (!hasCurrent) renderReaderLoading();
 
   try {
-    const result = await window.readerApi.getNextReading();
-    if (!result.site || !result.article) {
-      const skipped = result.skippedSites?.length ? ` 已跳过 ${result.skippedSites.length} 个未找到文章的来源。` : "";
-      const message = localizeReadingError(result.readerError);
-      renderEmptyLibrary(message);
-      setStatus(`${message}${skipped}`);
+    const result = await fetchReading();
+    const settled = window.NextReadingSession.settleRequest(
+      nextReadingSession,
+      generation,
+      { result, action },
+      { article: state.currentArticle }
+    );
+    if (!settled.accepted) return;
+    await applySettledReading(settled, result);
+  } catch (error) {
+    const settled = window.NextReadingSession.settleRequest(
+      nextReadingSession,
+      generation,
+      { error, action },
+      { article: state.currentArticle }
+    );
+    if (!settled.accepted) return;
+    await applySettledReading(settled, null);
+  } finally {
+    if (nextReadingSession.isCurrent(generation)) setBusy(false);
+  }
+
+  async function applySettledReading(settled, result) {
+    if (settled.view?.applyLoopResult && result) {
+      hideNextReadingNotice();
+      await applyLoopResult(result);
       return;
     }
+    await applyNextReadingView(settled.view, { savedScrollTop });
+  }
+}
 
-    state.currentSite = result.site;
-    state.currentArticle = result.article;
-    state.currentArticleSource = result.article.source || "";
-    state.readerArticle = result.readerArticle;
+async function applyNextReadingView(view, { savedScrollTop } = {}) {
+  hideNextReadingNotice();
+  if (view.replaceCurrent && view.nextReading) {
+    await window.ReaderProgressTracker?.stop();
+    state.currentSite = view.nextReading.site;
+    state.currentArticle = view.nextReading.article;
+    state.currentArticleSource = view.nextReading.article.source || "";
+    state.readerArticle = view.nextReading.readerArticle;
     state.bypassUrls = [];
+    state.nextReadingFailedUrl = "";
     renderCurrentReading();
     await refreshSites();
-    if (result.readerArticle) {
-      renderReaderArticle(result.readerArticle);
-      showReader();
-      rememberRecentArticle();
-    } else {
-      renderReaderFailure(localizeReadingError(result.readerError, "阅读模式暂时无法解析这篇文章。"));
-      showReader();
-      setStatus("已找到文章，但阅读模式解析失败；你仍可查看原文。");
-    }
+    renderReaderArticle(view.nextReading.readerArticle);
+    showReader();
+    rememberRecentArticle();
     await inspectPaywall();
-  } catch (error) {
-    setStatus(`挑选文章失败：${error.message}`);
-  } finally {
-    setBusy(false);
+    window.ReadingLoopView?.setReliableEnd?.({
+      paywalled: Boolean(state.paywallDetection?.paywalled),
+      infiniteOrUnknownEnd: false
+    });
+    window.ReadingLoopView?.setSkipLabel?.(true);
+    return;
+  }
+
+  if (view.keepCurrent) {
+    if (elements.readerModeView) elements.readerModeView.scrollTop = savedScrollTop;
+    setStatus(view.notice?.message || "挑选下一篇没有成功，仍留在当前文章。");
+    showNextReadingNotice(view.notice);
+    showReader();
+    return;
+  }
+
+  if (view.showSessionEnd) {
+    state.currentArticle = null;
+    state.readerArticle = null;
+    window.ReadingLoopView?.showSessionEnd?.();
+    showReader();
+    setStatus("这次先到这里");
+    return;
+  }
+
+  if (view.showImportGuide) {
+    renderEmptyLibrary(view.notice?.message || "还没有阅读来源，请添加网站或导入书签。");
+    setStatus(view.notice?.message || "");
+    return;
+  }
+
+  renderStartFailure(view.notice);
+  setStatus(view.notice?.message || "");
+}
+
+function hideNextReadingNotice() {
+  if (!elements.nextReadingNotice) return;
+  elements.nextReadingNotice.classList.add("hidden");
+  elements.nextReadingNotice.innerHTML = "";
+}
+
+function showNextReadingNotice(notice) {
+  if (!elements.nextReadingNotice || !notice) return;
+  const actions = [];
+  if (notice.canRetry) {
+    actions.push('<button type="button" data-next-reading-action="retry">重试</button>');
+  }
+  if (notice.openOriginalUrl) {
+    actions.push(`<button type="button" class="ghost" data-next-reading-action="open-original" data-url="${escapeHtml(notice.openOriginalUrl)}">打开原文</button>`);
+  }
+  elements.nextReadingNotice.innerHTML = `
+    <p>${escapeHtml(notice.message || "")}</p>
+    ${actions.length ? `<div class="notice-actions">${actions.join("")}</div>` : ""}
+  `;
+  elements.nextReadingNotice.classList.remove("hidden");
+  state.nextReadingFailedUrl = notice.openOriginalUrl || "";
+}
+
+function renderStartFailure(notice) {
+  state.currentSite = null;
+  state.currentArticle = null;
+  state.readerArticle = null;
+  window.ReadingLoopView?.hideAllOverlays?.();
+  elements.articleTitle.textContent = "随阅";
+  elements.siteMeta.textContent = notice?.message || "";
+  const title = notice?.kind === "extract_failed" ? "这篇文章还读不了。" : "暂时还没有下一篇。";
+  const actions = [];
+  if (notice?.canRetry) {
+    actions.push('<p><button type="button" data-next-reading-action="retry">重试</button></p>');
+  }
+  if (notice?.openOriginalUrl) {
+    actions.push(`<p><button type="button" class="ghost" data-next-reading-action="open-original" data-url="${escapeHtml(notice.openOriginalUrl)}">打开原文</button></p>`);
+  }
+  resetReaderScroll();
+  elements.readerArticle.innerHTML = `
+    <div class="empty-state">
+      <h1>${title}</h1>
+      <p>${escapeHtml(notice?.message || "")}</p>
+      ${actions.join("")}
+    </div>
+  `;
+  state.nextReadingFailedUrl = notice?.openOriginalUrl || "";
+}
+
+async function handleNextReadingNoticeAction(button) {
+  const action = button.dataset.nextReadingAction;
+  if (action === "retry") {
+    if (state.nextReadingRetry?.type === "site" && state.nextReadingRetry.siteId) {
+      await loadSiteReading(state.nextReadingRetry.siteId);
+      return;
+    }
+    if (state.nextReadingRetry?.type === "skip") {
+      await requestLoopSkip();
+      return;
+    }
+    if (state.nextReadingRetry?.type === "open") {
+      await startReadingLoop();
+      return;
+    }
+    await loadNextReading();
+    return;
+  }
+  if (action === "open-original") {
+    const href = button.dataset.url || state.nextReadingFailedUrl;
+    if (!href) return;
+    await window.readerApi.openExternalArticle(href);
+    setStatus("已在外部浏览器打开原文。");
   }
 }
 
@@ -1286,35 +1432,12 @@ async function handleSiteAction(button) {
 }
 
 async function loadSiteReading(siteId) {
-  await window.ReaderProgressTracker?.stop();
-  setBusy(true);
-  setStatus("正在从这个来源查找文章…");
-  renderReaderLoading();
-  try {
-    const result = await window.readerApi.readSite(siteId);
-    if (!result.site || !result.article) {
-      setStatus("这个来源暂时没有找到可阅读的文章。");
-      return;
-    }
-    state.currentSite = result.site;
-    state.currentArticle = result.article;
-    state.currentArticleSource = result.article.source || "";
-    state.readerArticle = result.readerArticle;
-    state.bypassUrls = [];
-    renderCurrentReading();
-    await refreshSites();
-    if (result.readerArticle) {
-      renderReaderArticle(result.readerArticle);
-      showReader();
-      rememberRecentArticle();
-    } else {
-      renderReaderFailure(localizeReadingError(result.readerError, "阅读模式暂时无法解析这篇文章。"));
-      showReader();
-    }
-    await inspectPaywall();
-  } finally {
-    setBusy(false);
-  }
+  state.nextReadingRetry = { type: "site", siteId };
+  await requestNextReading({
+    pendingStatus: "正在从这个来源查找文章…",
+    action: "site",
+    fetchReading: () => window.readerApi.readSite(siteId)
+  });
 }
 
 async function handleSourceAction(button) {
@@ -1373,6 +1496,8 @@ async function refreshAiSettings() {
     if (settings.readerPreferences) {
       state.readerFontSize = clamp(Number(settings.readerPreferences.fontSize), 16, 28);
       state.readerWidth = clamp(Number(settings.readerPreferences.width), 560, 1040);
+      state.savedReaderFontSize = state.readerFontSize;
+      state.savedReaderWidth = state.readerWidth;
       applyReaderSettings();
     }
   } catch (error) {
@@ -1392,36 +1517,69 @@ async function refreshIssueNumber() {
 
 function scheduleReaderPreferenceSave() {
   clearTimeout(state.preferenceSaveTimer);
+  const attemptedFontSize = state.readerFontSize;
+  const attemptedWidth = state.readerWidth;
   state.preferenceSaveTimer = setTimeout(() => {
     window.readerApi.saveReaderPreferences({
-      fontSize: state.readerFontSize,
-      width: state.readerWidth
-    }).catch((error) => reportRuntimeError("reader_preferences_save_failed", error));
+      fontSize: attemptedFontSize,
+      width: attemptedWidth
+    }).then((settings) => {
+      state.savedReaderFontSize = settings.readerPreferences.fontSize;
+      state.savedReaderWidth = settings.readerPreferences.width;
+      showToast("阅读偏好已保存。");
+    }).catch((error) => {
+      state.readerFontSize = state.savedReaderFontSize;
+      state.readerWidth = state.savedReaderWidth;
+      applyReaderSettings();
+      showToast(`设置未保存：${error.message}`);
+      reportRuntimeError("reader_preferences_save_failed", error);
+    });
   }, 250);
 }
 
 async function saveTranslationConsent() {
   const enabled = Boolean(elements.translationConsentInput?.checked);
-  const settings = await window.readerApi.saveTranslationConsent(enabled);
-  state.translationConsent = settings.translationConsent === true;
-  showToast(state.translationConsent ? "远程划词翻译已启用。" : "远程划词翻译已关闭。");
+  try {
+    const settings = await window.readerApi.saveTranslationConsent(enabled);
+    state.translationConsent = settings.translationConsent === true;
+    if (elements.translationConsentInput) {
+      elements.translationConsentInput.checked = state.translationConsent;
+    }
+    showToast(state.translationConsent ? "远程划词翻译已启用。" : "远程划词翻译已关闭。");
+  } catch (error) {
+    if (elements.translationConsentInput) {
+      elements.translationConsentInput.checked = state.translationConsent;
+    }
+    showToast(`设置未保存：${error.message}`);
+    reportRuntimeError("translation_consent_save_failed", error);
+  }
 }
 
 async function saveGroqApiKey(event) {
   event.preventDefault();
   const apiKey = elements.groqApiKeyInput.value.trim();
   if (!apiKey) throw new Error("请先输入 Groq API 密钥");
-  await window.readerApi.saveGroqApiKey(apiKey);
-  elements.groqApiKeyInput.value = "";
-  await refreshAiSettings();
-  showToast("Groq API 密钥已安全保存，等待中的分析将自动开始。");
+  try {
+    await window.readerApi.saveGroqApiKey(apiKey);
+    elements.groqApiKeyInput.value = "";
+    await refreshAiSettings();
+    showToast("Groq API 密钥已安全保存，等待中的分析将自动开始。");
+  } catch (error) {
+    showToast(`设置未保存：${error.message}`);
+    reportRuntimeError("groq_api_key_save_failed", error);
+  }
 }
 
 async function clearGroqApiKey() {
-  await window.readerApi.saveGroqApiKey("");
-  elements.groqApiKeyInput.value = "";
-  await refreshAiSettings();
-  showToast("已清除保存的 Groq API 密钥。");
+  try {
+    await window.readerApi.saveGroqApiKey("");
+    elements.groqApiKeyInput.value = "";
+    await refreshAiSettings();
+    showToast("已清除保存的 Groq API 密钥。");
+  } catch (error) {
+    showToast(`设置未保存：${error.message}`);
+    reportRuntimeError("groq_api_key_clear_failed", error);
+  }
 }
 
 async function clearBrowserCache() {
@@ -2089,24 +2247,20 @@ function configureReadingLoopView() {
 async function startReadingLoop() {
   dismissResumePrompt();
   state.loopResult = null;
-  setBusy(true);
-  setStatus("正在准备今天的阅读…");
-  try {
-    if (!window.readerApi.openReadingLoop) {
-      await loadNextReading();
-      return;
+  state.nextReadingRetry = { type: "open" };
+  await requestNextReading({
+    pendingStatus: "正在准备今天的阅读…",
+    action: "open",
+    fetchReading: async () => {
+      if (!window.readerApi.openReadingLoop) return window.readerApi.getNextReading();
+      return window.readerApi.openReadingLoop();
     }
-    const result = await window.readerApi.openReadingLoop();
-    await applyLoopResult(result);
-  } catch (error) {
-    setStatus(`打开阅读失败：${error.message}`);
-  } finally {
-    setBusy(false);
-  }
+  });
 }
 
 async function applyLoopResult(result) {
   state.loopResult = result;
+  hideNextReadingNotice();
   window.ReadingLoopView?.hideAllOverlays?.();
   if (result?.mode === "resume") {
     await presentPickedReading(result, { resume: result.resume || null });
@@ -2154,9 +2308,11 @@ async function applyLoopResult(result) {
     return;
   }
   if (result?.mode === "empty" || result?.mode === "emptyAfterCross") {
-    const message = localizeReadingError(result.readerError);
-    renderEmptyLibrary(message);
-    setStatus(message);
+    const view = window.NextReadingSession.decideLoopPickupView(result, {
+      hasCurrentArticle: Boolean(state.currentArticle),
+      action: result.mode === "emptyAfterCross" ? "cross" : "open"
+    });
+    await applyNextReadingView(view);
   }
 }
 
@@ -2180,21 +2336,15 @@ async function acceptReadingInvite() {
 
 async function requestLoopSkip() {
   dismissResumePrompt();
-  await window.ReaderProgressTracker?.stop();
-  setBusy(true);
-  setStatus("正在换一篇…");
-  try {
-    if (!window.readerApi.skipReadingLoop) {
-      await loadNextReading();
-      return;
+  state.nextReadingRetry = { type: "skip" };
+  await requestNextReading({
+    pendingStatus: "正在换一篇…",
+    action: "skip",
+    fetchReading: async () => {
+      if (!window.readerApi.skipReadingLoop) return window.readerApi.getNextReading();
+      return window.readerApi.skipReadingLoop();
     }
-    const result = await window.readerApi.skipReadingLoop();
-    await applyLoopResult(result);
-  } catch (error) {
-    setStatus(`换篇失败：${error.message}`);
-  } finally {
-    setBusy(false);
-  }
+  });
 }
 
 async function saveCurrentAndSkip() {
@@ -2208,26 +2358,32 @@ async function saveCurrentAndSkip() {
 async function crossReadingLoop() {
   if (state.loopCrossing) return;
   state.loopCrossing = true;
-  setBusy(true);
+  state.nextReadingRetry = { type: "open" };
   try {
-    const result = await window.readerApi.crossReadingLoop();
-    await applyLoopResult(result);
-  } catch (error) {
-    setStatus(`收口后打开下一篇失败：${error.message}`);
+    await requestNextReading({
+      pendingStatus: "正在准备下一篇…",
+      action: "cross",
+      fetchReading: () => window.readerApi.crossReadingLoop()
+    });
   } finally {
     state.loopCrossing = false;
-    setBusy(false);
   }
 }
 
 async function presentPickedReading(result, { resume = null } = {}) {
-  if (!result?.site || !result?.article) {
-    const skipped = result?.skippedSites?.length ? ` 已跳过 ${result.skippedSites.length} 个未找到文章的来源。` : "";
-    const message = localizeReadingError(result?.readerError);
-    renderEmptyLibrary(message);
-    setStatus(`${message}${skipped}`);
+  if (!result?.site || !result?.article || !result?.readerArticle) {
+    const view = window.NextReadingSession.decideLoopPickupView({
+      ...(result || {}),
+      mode: result?.mode === "resume" || result?.mode === "replace" || result?.mode === "reading"
+        ? "skipFailed"
+        : (result?.mode || "empty")
+    }, {
+      hasCurrentArticle: Boolean(state.currentArticle)
+    });
+    await applyNextReadingView(view);
     return;
   }
+  await window.ReaderProgressTracker?.stop();
   state.currentSite = result.site;
   state.currentArticle = result.article;
   state.currentArticleSource = result.article.source || "";

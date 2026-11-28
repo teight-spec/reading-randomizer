@@ -95,35 +95,40 @@ class ReadingLoopService {
 
   async skip() {
     const current = await this.store.load();
-    const skipped = recordSkip(current, Date.now());
-    if (skipped.decision === "noop") {
+    const preview = recordSkip(current, Date.now());
+    if (preview.decision === "noop") {
       await this.log("skip_noop", { ended: Boolean(current.session?.ended) });
       return { mode: current.session?.ended ? "end" : "noop", loop: current };
     }
 
-    if (skipped.skippedUrl) {
-      await this.historyStore?.unmarkOpened?.(skipped.skippedUrl);
-    }
-    await this.store.save(skipped.state);
-    await this.log("skip", {
-      skippedUrl: skipped.skippedUrl,
-      decision: skipped.decision,
-      skipCount: skipped.state.session?.skipCount
-    });
-
-    if (skipped.decision === "end") {
-      return { mode: "end", loop: skipped.state };
-    }
-
-    const picked = await this.pickNext(excludedUrls(skipped.state, Date.now()));
-    if (!picked.article) {
-      skipped.state.session.ended = true;
-      await this.store.save(skipped.state);
-      await this.log("skip_replace_empty", { skippedUrl: skipped.skippedUrl });
-      return this.wrap("end", picked, skipped.state);
+    if (preview.decision === "end") {
+      if (preview.skippedUrl) {
+        await this.historyStore?.unmarkOpened?.(preview.skippedUrl);
+      }
+      await this.store.save(preview.state);
+      await this.log("skip", {
+        skippedUrl: preview.skippedUrl,
+        decision: preview.decision,
+        skipCount: preview.state.session?.skipCount
+      });
+      return { mode: "end", loop: preview.state };
     }
 
-    const assigned = assignCurrent(skipped.state, this.metaFromPayload(picked), {
+    const exclude = excludedUrls(current, Date.now());
+    if (current.current?.articleUrl) exclude.push(current.current.articleUrl);
+    const picked = await this.pickNext(exclude);
+    if (!isReadablePickup(picked)) {
+      await this.log("skip_replace_failed", {
+        skippedUrl: current.current?.articleUrl,
+        readerError: picked?.readerError || null
+      });
+      return this.wrap("skipFailed", picked, current, { keptCurrent: true });
+    }
+
+    if (preview.skippedUrl) {
+      await this.historyStore?.unmarkOpened?.(preview.skippedUrl);
+    }
+    const assigned = assignCurrent(preview.state, this.metaFromPayload(picked), {
       via: "replace",
       enteredBody: true
     });
@@ -348,7 +353,12 @@ class ReadingLoopService {
 }
 
 
+function isReadablePickup(picked) {
+  return Boolean(picked?.article?.url && picked?.site && picked?.readerArticle);
+}
+
 function redactUrl(value) {
+
   try {
     const url = new URL(String(value || ""));
     return `${url.protocol}//${url.host}/…`;
