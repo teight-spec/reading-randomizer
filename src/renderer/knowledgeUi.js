@@ -199,7 +199,7 @@
           <p>${escapeHtml(article.whyItMatters)}</p>
         </section>
         ${article.entities.length ? `<section class="knowledge-detail-section"><h3>涉及对象</h3><p>${article.entities.map(escapeHtml).join(" · ")}</p></section>` : ""}
-      ` : `<div class="analysis-pending"><strong>${escapeHtml(statusLabel(article.knowledgeStatus))}</strong><span>文章原文已经保存，AI 摘要会在后台生成。</span></div>`}
+      ` : `<div class="analysis-pending"><strong>${escapeHtml(article.contentLabel || statusLabel(article.knowledgeStatus))}</strong><span>${article.offlineReadable ? "文章原文已经保存，AI 摘要会在后台生成。" : "正文未保存。进度和原文入口仍保留，但不能离线阅读。"}</span></div>`}
       <form id="knowledgeMetadataForm" class="knowledge-metadata-form">
         <label>分类
           <select name="categorySlug">
@@ -221,7 +221,7 @@
       analyzed: "已分析",
       pending_analysis: "等待 AI 分析",
       analysis_failed: "分析失败",
-      content_missing: "正文缺失"
+      content_missing: "正文未保存"
     })[status] || status || "已收录";
   }
 

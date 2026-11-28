@@ -199,7 +199,7 @@ test("IPC input validation accepts web URLs and rejects unsafe schemes or oversi
   assert.throws(() => validateTranslationPayload({ text: "x".repeat(5001) }), /too long/);
 });
 
-test("KnowledgeDatabase starts empty and completes reading only after cumulative thresholds", async () => {
+test("KnowledgeDatabase records progress without treating thresholds as finished", async () => {
   const { KnowledgeDatabase } = require("../src/main/services/knowledgeDatabase");
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reader-knowledge-"));
   await fs.writeFile(path.join(dir, "reading-history.json"), JSON.stringify({
@@ -244,21 +244,32 @@ test("KnowledgeDatabase starts empty and completes reading only after cumulative
   assert.equal(first.completed, false);
   const duplicate = database.recordProgress({ ...base, sessionId: "session-1", activeMs: 120_000 }, cachedItem);
   assert.equal(duplicate.activeMs, 120_000, "replayed session progress must be idempotent");
-  const completed = database.recordProgress({
+  const stillOpen = database.recordProgress({
     ...base,
     sessionId: "session-2",
     activeMs: 60_000,
     maxScrollDepth: 0.5,
     bottomDwellMs: 0
   }, cachedItem);
-  assert.equal(completed.completed, true);
-  assert.equal(completed.newlyCompleted, true);
+  assert.equal(stillOpen.completed, false);
+  assert.equal(stillOpen.newlyCompleted, false);
+  assert.equal(database.getStats().total, 0, "scrolling or lingering must not ingest a finished article");
+  assert.equal(database.listArticles({}).length, 0);
+
+  const archived = database.archiveCrossedReading({ cachedItem, progress: base });
+  assert.equal(archived.snapshotSaved, true);
+  assert.equal(archived.offlineReadable, true);
+  assert.equal(archived.newlyCompleted, true);
+  assert.equal(archived.contentLabel, null);
   assert.equal(database.getStats().total, 1);
   assert.equal(database.listArticles({})[0].originalUrl, cachedItem.article.url);
   assert.equal(database.listArticles({})[0].knowledgeStatus, "pending_analysis");
+  assert.equal(database.listArticles({})[0].offlineReadable, true);
+  assert.equal(database.getArticle(archived.articleId).offlineReadable, true);
+  assert.equal(database.getArticle(archived.articleId).thesis, null, "a missing summary must not block local ingest");
 
   const job = database.claimNextJob();
-  assert.equal(job.article_id, completed.articleId);
+  assert.equal(job.article_id, archived.articleId);
   database.completeAnalysis(job.id, {
     thesis: "这是一篇关于持久知识的文章。",
     keyPoints: ["要点一", "要点二", "要点三"],
@@ -270,7 +281,7 @@ test("KnowledgeDatabase starts empty and completes reading only after cumulative
     tags: ["知识管理", "阅读"],
     tagConfidence: 0.8
   }, { model: "test-model", promptVersion: "test-v1", sourceHash: "hash" });
-  const analyzed = database.getArticle(completed.articleId);
+  const analyzed = database.getArticle(archived.articleId);
   assert.equal(analyzed.knowledgeStatus, "analyzed");
   assert.equal(analyzed.categorySlug, "technology-ai");
   assert.deepEqual(analyzed.tags.sort(), ["知识管理", "阅读"].sort());
@@ -279,23 +290,25 @@ test("KnowledgeDatabase starts empty and completes reading only after cumulative
   assert.equal(database.listArticles({ category: "technology-ai" }).length, 1);
 
   const missingUrl = "https://example.com/temporarily-missing";
-  const missing = database.recordProgress({
-    ...base,
-    sessionId: "session-missing",
-    articleUrl: missingUrl,
-    activeMs: 180_000
-  }, null);
+  const missing = database.archiveCrossedReading({
+    progress: { ...base, articleUrl: missingUrl, articleTitle: "Missing body" },
+    cachedItem: null
+  });
+  assert.equal(missing.snapshotSaved, false);
+  assert.equal(missing.offlineReadable, false);
+  assert.equal(missing.contentLabel, "正文未保存");
   assert.equal(database.getArticle(missing.articleId).knowledgeStatus, "content_missing");
-  const restored = database.recordProgress({
-    ...base,
-    sessionId: "session-missing",
-    articleUrl: missingUrl,
-    activeMs: 180_000
-  }, {
-    ...cachedItem,
-    article: { ...cachedItem.article, url: missingUrl }
+  assert.equal(database.getArticle(missing.articleId).offlineReadable, false);
+  assert.equal(database.getArticle(missing.articleId).originalUrl, missingUrl);
+  const restored = database.archiveCrossedReading({
+    progress: { ...base, articleUrl: missingUrl },
+    cachedItem: {
+      ...cachedItem,
+      article: { ...cachedItem.article, url: missingUrl }
+    }
   });
   assert.equal(restored.analysisQueued, true);
+  assert.equal(restored.offlineReadable, true);
   assert.equal(database.getArticle(missing.articleId).knowledgeStatus, "pending_analysis");
   database.close();
 });
@@ -1289,8 +1302,13 @@ test("recent reading list keeps the newest 50 and read-later leaves when collect
   };
   const incomplete = database.recordProgress({ ...base, sessionId: "later-1", activeMs: 1000 }, cachedItem);
   assert.equal(incomplete.removedFromLater, null);
+  assert.equal(incomplete.completed, false);
   assert.equal(database.listShelf("later").length, 1);
-  const completed = database.recordProgress({ ...base, sessionId: "later-2", activeMs: 180_000 }, cachedItem);
+  const stillLater = database.recordProgress({ ...base, sessionId: "later-2", activeMs: 180_000 }, cachedItem);
+  assert.equal(stillLater.completed, false);
+  assert.equal(stillLater.newlyCompleted, false);
+  assert.equal(database.listShelf("later").length, 1, "progress thresholds must not collect or leave the later shelf");
+  const completed = database.archiveCrossedReading({ cachedItem, progress: base });
   assert.equal(completed.newlyCompleted, true);
   assert.equal(completed.removedFromLater.articleTitle, "Later story");
   assert.equal(database.listShelf("later").length, 0);
@@ -1622,6 +1640,7 @@ require("./reading-loop-tests")({ test, fs, path, assert, os });
 require("./reading-marks-tests")({ test, fs, path, assert, os });
 require("./ensure-suiyue-electron-bundle-tests")({ test, fs, path, assert, os });
 require("./settings-and-next-reading-tests")({ test, fs, path, assert, os });
+require("./reliability-batch2-tests")({ test, fs, path, assert, os });
 
 (async () => {
   for (const item of tests) {

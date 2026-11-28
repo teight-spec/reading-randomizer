@@ -1,6 +1,7 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { writeJsonAtomic } = require("./jsonFile");
+const { calendarDayDiff, dayKey, SKIP_COOLDOWN_DAYS } = require("./readingLoopState");
 
 const EMPTY_HISTORY = {
   openedArticles: [],
@@ -55,17 +56,25 @@ class HistoryStore {
     });
   }
 
-  async markOpened(site, article) {
+  async markOpened(site, article, now = Date.now()) {
     return this.mutate((history) => {
       history.openedArticles = history.openedArticles || [];
-      if (!history.openedArticles.some((item) => item.articleUrl === article.url)) {
+      const openedAt = new Date(now).toISOString();
+      const existing = history.openedArticles.find((item) => item.articleUrl === article.url);
+      if (existing) {
+        existing.openedAt = openedAt;
+        history.openedArticles = [
+          existing,
+          ...history.openedArticles.filter((item) => item.articleUrl !== article.url)
+        ];
+      } else {
         history.openedArticles.unshift({
           siteId: site.id,
           siteTitle: site.title,
           siteUrl: site.url,
           articleTitle: article.title,
           articleUrl: article.url,
-          openedAt: new Date().toISOString()
+          openedAt
         });
       }
       history.openedArticles = history.openedArticles.slice(0, 2000);
@@ -154,7 +163,23 @@ function shuffle(items) {
   return copy;
 }
 
+function urlsWithinOpenedCooldown(items, now = Date.now(), cooldownDays = SKIP_COOLDOWN_DAYS, atKey = "openedAt") {
+  const today = dayKey(now);
+  const urls = [];
+  for (const item of items || []) {
+    if (!item?.articleUrl) continue;
+    const raw = item[atKey] || item.openedAt || item.readAt;
+    if (!raw) continue;
+    const timestamp = Date.parse(raw);
+    if (!Number.isFinite(timestamp)) continue;
+    const key = dayKey(timestamp);
+    if (calendarDayDiff(key, today) < cooldownDays) urls.push(item.articleUrl);
+  }
+  return urls;
+}
+
 module.exports = {
   HistoryStore,
-  randomItem
+  randomItem,
+  urlsWithinOpenedCooldown
 };

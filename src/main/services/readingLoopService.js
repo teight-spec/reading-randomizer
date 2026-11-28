@@ -7,6 +7,7 @@ const {
   buildInviteReason,
   estimateReadingMinutes,
   excludedUrls,
+  isOnSkipCooldown,
   isUnfinished,
   markCrossed,
   recordSkip,
@@ -151,7 +152,11 @@ class ReadingLoopService {
 
     const crossed = markCrossed(current, Date.now());
     await this.store.save(crossed);
-    await this.log("cross", { articleUrl: crossed.current?.articleUrl });
+    const snapshot = await this.persistCrossedSnapshot(crossed);
+    await this.log("cross", {
+      articleUrl: crossed.current?.articleUrl,
+      snapshotSaved: Boolean(snapshot?.snapshotSaved)
+    });
     const invited = await this.pickAndInvite(crossed, { inviteKind: "nextAfterCross", excludeCurrent: true });
     const articleUrl = crossed.current?.articleUrl;
     const marks = marksFor(invited.loop || crossed, articleUrl);
@@ -162,12 +167,12 @@ class ReadingLoopService {
       marks,
       articleUrl
     })) {
-      return invited;
+      return { ...invited, snapshot };
     }
     const withBookmark = setPendingBookmark(invited.loop, pickBookmarkMark(marks), articleUrl);
     await this.store.save(withBookmark);
     await this.log("cross_bookmark", { hasNote: Boolean(withBookmark.pendingBookmark?.note) });
-    return this.wrap("bookmark", {}, withBookmark, { bookmark: withBookmark.pendingBookmark });
+    return this.wrap("bookmark", {}, withBookmark, { bookmark: withBookmark.pendingBookmark, snapshot });
   }
 
   async saveMark(payload = {}) {
@@ -212,6 +217,10 @@ class ReadingLoopService {
     if (isUnfinished(state) || state.pendingInvite?.articleUrl) return state;
     const seat = this.knowledgeDatabase?.getLatestReadingSeat?.();
     if (!seat?.articleUrl || seat.completedAt) return state;
+    if (isOnSkipCooldown(state, seat.articleUrl)) {
+      await this.log("adopt_legacy_seat_skipped", { articleUrl: seat.articleUrl });
+      return state;
+    }
     const adopted = assignCurrent(state, {
       articleUrl: seat.articleUrl,
       articleTitle: seat.articleTitle,
@@ -323,6 +332,47 @@ class ReadingLoopService {
   recentShelfArticle() {
     const recent = this.knowledgeDatabase?.listShelf?.("recent", 5) || [];
     return recent[0] || null;
+  }
+
+  async persistCrossedSnapshot(loop) {
+    const articleUrl = loop?.current?.articleUrl;
+    if (!articleUrl || !this.knowledgeDatabase?.archiveCrossedReading) return null;
+    try {
+      const cached = await this.articleCache?.getArticle?.(articleUrl) || null;
+      const position = this.knowledgeDatabase.getReadingPosition?.(articleUrl) || null;
+      return this.knowledgeDatabase.archiveCrossedReading({
+        cachedItem: cached || {
+          site: {
+            id: loop.current?.siteId || "",
+            title: loop.current?.siteTitle || "",
+            domain: loop.current?.siteDomain || ""
+          },
+          article: {
+            url: articleUrl,
+            title: loop.current?.articleTitle || articleUrl
+          },
+          readerArticle: null
+        },
+        progress: {
+          articleUrl,
+          articleTitle: loop.current?.articleTitle || articleUrl,
+          siteId: loop.current?.siteId || position?.siteId || "",
+          siteTitle: loop.current?.siteTitle || position?.siteTitle || "",
+          siteDomain: loop.current?.siteDomain || position?.siteDomain || "",
+          progressPercent: position?.progressPercent || 0
+        },
+        crossedAt: Date.parse(loop.current?.crossedAt) || Date.now()
+      });
+    } catch (error) {
+      await this.log("cross_snapshot_failed", { message: error.message || String(error) });
+      return {
+        snapshotSaved: false,
+        offlineReadable: false,
+        knowledgeStatus: "content_missing",
+        contentLabel: "正文未保存",
+        error: error.message || String(error)
+      };
+    }
   }
 
   wrap(mode, payload, loop, extras = {}) {

@@ -2,6 +2,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { isResumePromptRange } = require("../../renderer/readingAnchor");
+const { sanitizeArticleHtml } = require("./htmlSanitizer");
 
 const DEFAULT_CATEGORIES = [
   { slug: "world-politics", name: "国际与政治" },
@@ -282,25 +283,10 @@ class KnowledgeDatabase {
         FROM reading_sessions
         WHERE article_url = ?
       `).get(canonicalUrl);
-      const qualifies =
-        Number(totals.active_ms) >= READ_THRESHOLDS.activeMs &&
-        Number(totals.max_scroll_depth) >= READ_THRESHOLDS.scrollDepth &&
-        Number(totals.bottom_dwell_ms) >= READ_THRESHOLDS.bottomDwellMs;
       const existing = this.db.prepare("SELECT id, knowledge_status FROM articles WHERE canonical_url = ?").get(canonicalUrl);
 
       let articleId = existing?.id || null;
-      let newlyCompleted = false;
-      let analysisQueued = false;
-      if (qualifies && !existing) {
-        articleId = this.captureArticle({
-          canonicalUrl,
-          cachedItem,
-          progress,
-          totals
-        });
-        newlyCompleted = true;
-        analysisQueued = Boolean(cachedItem?.readerArticle?.textContent && cachedItem?.readerArticle?.content);
-      } else if (qualifies && existing) {
+      if (existing) {
         this.db.prepare(`
           UPDATE articles
           SET active_reading_ms = MAX(active_reading_ms, ?),
@@ -308,18 +294,6 @@ class KnowledgeDatabase {
               updated_at = ?
           WHERE id = ?
         `).run(Number(totals.active_ms), Number(totals.max_scroll_depth), nowIso(), existing.id);
-        if (existing.knowledge_status === "content_missing") {
-          analysisQueued = this.restoreMissingContent(existing.id, cachedItem);
-        }
-      }
-
-      if (qualifies) {
-        const completedAt = totals.completed_at || nowIso();
-        this.db.prepare(`
-          UPDATE reading_sessions
-          SET completed_at = COALESCE(completed_at, ?)
-          WHERE article_url = ?
-        `).run(completedAt, canonicalUrl);
       }
 
       const article = articleId
@@ -332,6 +306,106 @@ class KnowledgeDatabase {
             updated_at = CASE WHEN kind = 'recent' THEN ? ELSE updated_at END
         WHERE canonical_url = ?
       `).run(progress.progressPercent, progress.anchorJson, nowIso(), canonicalUrl);
+      return {
+        articleId,
+        completed: false,
+        newlyCompleted: false,
+        analysisQueued: false,
+        activeMs: Number(totals.active_ms),
+        maxScrollDepth: Number(totals.max_scroll_depth),
+        bottomDwellMs: Number(totals.bottom_dwell_ms),
+        knowledgeStatus: article?.knowledge_status || null,
+        thresholds: READ_THRESHOLDS,
+        removedFromLater: null
+      };
+    });
+  }
+
+  archiveCrossedReading({ cachedItem = null, progress = {}, crossedAt = Date.now() } = {}) {
+    const articleUrl = cachedItem?.article?.url || progress.articleUrl;
+    const canonicalUrl = normalizeUrl(articleUrl);
+    if (!canonicalUrl) throw new Error("A valid article URL is required");
+    const payload = {
+      articleUrl: canonicalUrl,
+      articleTitle: truncate(cleanText(progress.articleTitle || cachedItem?.readerArticle?.title || cachedItem?.article?.title || articleUrl), 500),
+      siteId: truncate(cleanText(progress.siteId || cachedItem?.site?.id || ""), 200),
+      siteTitle: truncate(cleanText(progress.siteTitle || cachedItem?.site?.title || ""), 300),
+      siteDomain: truncate(cleanText(progress.siteDomain || cachedItem?.site?.domain || ""), 200),
+      activeMs: clampInteger(progress.activeMs, 0, 24 * 60 * 60 * 1000, 0),
+      maxScrollDepth: clampNumber(progress.maxScrollDepth, 0, 1, 0),
+      progressPercent: clampNumber(progress.progressPercent, 0, 100, 0)
+    };
+
+    return this.transaction(() => {
+      const readerArticle = cachedItem?.readerArticle || {};
+      const rawHtml = String(readerArticle.content || "");
+      const sanitizedHtml = rawHtml ? sanitizeArticleHtml(rawHtml, canonicalUrl) : "";
+      let contentHtml = String(sanitizedHtml || "").trim();
+      let contentText = cleanText(readerArticle.textContent || "") || textFromHtml(contentHtml);
+      if (!contentHtml && contentText) {
+        contentHtml = `<p>${escapeHtml(contentText)}</p>`;
+      }
+      const snapshotSaved = Boolean(contentHtml && contentText);
+      const totalsRow = this.db.prepare(`
+        SELECT
+          COALESCE(SUM(active_ms), 0) AS active_ms,
+          COALESCE(MAX(max_scroll_depth), 0) AS max_scroll_depth
+        FROM reading_sessions
+        WHERE article_url = ?
+      `).get(canonicalUrl);
+      const totals = {
+        active_ms: Math.max(Number(totalsRow?.active_ms) || 0, payload.activeMs || 0),
+        max_scroll_depth: Math.max(Number(totalsRow?.max_scroll_depth) || 0, payload.maxScrollDepth || 0)
+      };
+      const snapshotItem = {
+        site: cachedItem?.site || {},
+        article: cachedItem?.article || { url: payload.articleUrl, title: payload.articleTitle },
+        readerArticle: {
+          ...readerArticle,
+          content: contentHtml,
+          textContent: contentText
+        }
+      };
+      const existing = this.db.prepare(`
+        SELECT id, knowledge_status, content_html, content_text
+        FROM articles WHERE canonical_url = ?
+      `).get(canonicalUrl);
+
+      let articleId;
+      let newlyCompleted = false;
+      let analysisQueued = false;
+      if (!existing) {
+        articleId = this.captureArticle({
+          canonicalUrl,
+          cachedItem: snapshotItem,
+          progress: payload,
+          totals
+        });
+        newlyCompleted = true;
+        analysisQueued = snapshotSaved;
+      } else {
+        articleId = existing.id;
+        this.db.prepare(`
+          UPDATE articles
+          SET active_reading_ms = MAX(active_reading_ms, ?),
+              max_scroll_depth = MAX(max_scroll_depth, ?),
+              updated_at = ?
+          WHERE id = ?
+        `).run(totals.active_ms, totals.max_scroll_depth, nowIso(), existing.id);
+        const missingSnapshot = !existing.content_html || !existing.content_text
+          || existing.knowledge_status === "content_missing";
+        if (snapshotSaved && missingSnapshot) {
+          analysisQueued = this.restoreMissingContent(existing.id, snapshotItem);
+        }
+      }
+
+      const completedAt = new Date(crossedAt).toISOString();
+      this.db.prepare(`
+        UPDATE reading_sessions
+        SET completed_at = COALESCE(completed_at, ?)
+        WHERE article_url = ?
+      `).run(completedAt, canonicalUrl);
+
       let removedFromLater = null;
       if (newlyCompleted) {
         const saved = this.db.prepare(`
@@ -342,16 +416,24 @@ class KnowledgeDatabase {
           removedFromLater = mapShelfRow(saved, true);
         }
       }
+
+      const article = this.db.prepare(`
+        SELECT knowledge_status, content_html, content_text, original_url,
+               active_reading_ms, max_scroll_depth
+        FROM articles WHERE id = ?
+      `).get(articleId);
+      const flags = describeSnapshot(article?.content_html, article?.content_text);
       return {
         articleId,
-        completed: qualifies,
         newlyCompleted,
         analysisQueued,
-        activeMs: Number(totals.active_ms),
-        maxScrollDepth: Number(totals.max_scroll_depth),
-        bottomDwellMs: Number(totals.bottom_dwell_ms),
-        knowledgeStatus: article?.knowledge_status || null,
-        thresholds: READ_THRESHOLDS,
+        snapshotSaved: flags.snapshotSaved,
+        offlineReadable: flags.offlineReadable,
+        knowledgeStatus: article?.knowledge_status || (flags.snapshotSaved ? "pending_analysis" : "content_missing"),
+        contentLabel: flags.contentLabel,
+        originalUrl: article?.original_url || payload.articleUrl,
+        activeMs: Number(article?.active_reading_ms) || totals.active_ms,
+        maxScrollDepth: Number(article?.max_scroll_depth) || totals.max_scroll_depth,
         removedFromLater
       };
     });
@@ -579,6 +661,8 @@ class KnowledgeDatabase {
         a.site_domain AS siteDomain, a.completed_at AS completedAt,
         a.active_reading_ms AS activeReadingMs, a.max_scroll_depth AS maxScrollDepth,
         a.knowledge_status AS knowledgeStatus,
+        a.content_html AS contentHtml,
+        a.content_text AS contentText,
         s.thesis,
         c.slug AS categorySlug, c.name AS categoryName,
         GROUP_CONCAT(DISTINCT t.name) AS tagNames
@@ -607,11 +691,19 @@ class KnowledgeDatabase {
       ORDER BY a.completed_at DESC
       LIMIT ? OFFSET ?
     `).all(query, like, like, like, like, like, like, like, like, category, category, status, status, limit, offset);
-    return rows.map((row) => ({
-      ...row,
-      tags: splitTags(row.tagNames),
-      tagNames: undefined
-    }));
+    return rows.map((row) => {
+      const flags = describeSnapshot(row.contentHtml, row.contentText);
+      return {
+        ...row,
+        tags: splitTags(row.tagNames),
+        tagNames: undefined,
+        contentHtml: undefined,
+        contentText: undefined,
+        snapshotSaved: flags.snapshotSaved,
+        offlineReadable: flags.offlineReadable,
+        contentLabel: flags.contentLabel
+      };
+    });
   }
 
   getArticle(articleId) {
@@ -631,6 +723,7 @@ class KnowledgeDatabase {
       GROUP BY a.id
     `).get(articleId);
     if (!row) return null;
+    const flags = describeSnapshot(row.content_html, row.content_text);
     return {
       id: row.id,
       title: row.title,
@@ -641,10 +734,14 @@ class KnowledgeDatabase {
       publishedAt: row.published_at,
       excerpt: row.excerpt,
       contentText: row.content_text,
+      contentHtml: row.content_html,
       activeReadingMs: row.active_reading_ms,
       maxScrollDepth: row.max_scroll_depth,
       knowledgeStatus: row.knowledge_status,
       completedAt: row.completed_at,
+      snapshotSaved: flags.snapshotSaved,
+      offlineReadable: flags.offlineReadable,
+      contentLabel: flags.contentLabel,
       thesis: row.thesis,
       keyPoints: parseJsonArray(row.key_points_json),
       evidence: parseJsonArray(row.evidence_json),
@@ -1011,6 +1108,28 @@ function normalizeTagList(tags) {
   return [...new Set(values.map((value) => truncate(cleanText(value), 80)).filter(Boolean))].slice(0, 12);
 }
 
+function describeSnapshot(contentHtml, contentText) {
+  const snapshotSaved = Boolean(String(contentHtml || "").trim() && cleanText(contentText || ""));
+  return {
+    snapshotSaved,
+    offlineReadable: snapshotSaved,
+    contentLabel: snapshotSaved ? null : "正文未保存"
+  };
+}
+
+function textFromHtml(html) {
+  return cleanText(String(html || "").replace(/<[^>]+>/g, " "));
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
 function cleanText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
@@ -1075,5 +1194,6 @@ module.exports = {
   READ_THRESHOLDS,
   RECENT_READ_LIMIT,
   normalizeUrl,
-  normalizeProgress
+  normalizeProgress,
+  describeSnapshot
 };

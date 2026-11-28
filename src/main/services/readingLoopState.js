@@ -93,6 +93,17 @@ function excludedUrls(state, now = Date.now(), cooldownDays = SKIP_COOLDOWN_DAYS
   return [...urls];
 }
 
+function isOnSkipCooldown(state, articleUrl, now = Date.now(), cooldownDays = SKIP_COOLDOWN_DAYS) {
+  const target = String(articleUrl || "");
+  if (!target) return false;
+  const today = dayKey(now);
+  return (state?.skipped || []).some((item) => {
+    if (!item?.articleUrl || item.articleUrl !== target) return false;
+    const key = item.dayKey || dayKey(Date.parse(item.skippedAt || "") || now);
+    return calendarDayDiff(key, today) < cooldownDays;
+  });
+}
+
 function articleRecord(article = {}, extras = {}) {
   return {
     articleUrl: article.articleUrl || article.url || "",
@@ -279,6 +290,7 @@ return {
   estimateReadingMinutes,
   excludedUrls,
   hasMinEngagement,
+  isOnSkipCooldown,
   hasReliableEnd,
   isUnfinished,
   markCrossed,

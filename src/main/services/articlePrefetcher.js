@@ -1,4 +1,5 @@
 const { ArticlePipeline } = require("./articlePipeline");
+const { urlsWithinOpenedCooldown } = require("./historyStore");
 
 const RANDOM_SITE_DISCOVERY_TIMEOUT_MS = 12000;
 const DIRECT_SITE_DISCOVERY_TIMEOUT_MS = 22000;
@@ -276,11 +277,11 @@ class ArticlePrefetcher {
     }
   }
 
-  async getReadUrlSet() {
+  async getReadUrlSet({ now = Date.now() } = {}) {
     const history = await this.historyStore.load();
     return new Set([
-      ...(history.readArticles || []).map((item) => item.articleUrl),
-      ...(history.openedArticles || []).map((item) => item.articleUrl),
+      ...urlsWithinOpenedCooldown(history.openedArticles, now, undefined, "openedAt"),
+      ...urlsWithinOpenedCooldown(history.readArticles, now, undefined, "readAt"),
       ...(this.extraExcludeUrls || [])
     ]);
   }
